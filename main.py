@@ -1,5 +1,6 @@
 import os
 import time
+import shutil
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -9,12 +10,12 @@ from threading import Thread
 
 # ================= CONFIGURATION =================
 
-# Render ke environment variables se data uthayega
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+PORT = os.environ.get("PORT")
 
-# Target Channel ID jahan bot file bhejega
+# Target Channel jahan bot file ko permanent save karega (Database solution)
 DEST_CHANNEL = int(os.environ.get("DEST_CHANNEL", "-10023456789")) 
 
 OWNER_ID = 5344078567                    
@@ -23,16 +24,16 @@ ALLOWED_GROUPS = [-1003899919015]
 
 app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ✅ RAM MANAGEMENT: Tiny model + int8 (Render 512MB RAM ke liye best)
+# ✅ RAM MANAGEMENT: Tiny model (Render Free 512MB RAM ke liye best)
 model = WhisperModel("tiny", device="cpu", compute_type="int8")
 
-# ================= PORT BINDING (For Render Health Check) =================
+# ================= PORT BINDING (Render Bypass) =================
 
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def health_check():
-    return "Bot is Running Live on Render!"
+    return "Bot is Running Live!"
 
 def run_flask():
     # Render default port 10000 detect karega
@@ -44,7 +45,6 @@ def run_flask():
 def is_authorized(message: Message) -> bool:
     if not message.from_user: return False
     u_id = message.from_user.id    
-    # Check if user is owner, allowed user or if message is in allowed group
     if u_id == OWNER_ID or u_id in ALLOWED_USERS or message.chat.id in ALLOWED_GROUPS:
         return True
     return False
@@ -68,17 +68,17 @@ async def process_transcription(client, message, mode):
     if not replied or not (replied.video or replied.document):
         return await message.reply(f"❌ Video file par reply karke `/{mode}` likho!")
 
-    status = await message.reply(f"⏳ **Processing {mode.upper()}...**\nAudio extract ho raha hai, thoda sabar rakho.")
+    status = await message.reply(f"⏳ **Processing {mode.upper()}...**\nAudio process ho raha hai lala.")
     
     start_time = time.time()
     v_path = None
     output_file = None
     
     try:
-        # Step 1: Media Download
+        # Step 1: Download to Render Disk
         v_path = await client.download_media(replied)
         
-        # Step 2: AI Transcription (Auto Language Detection)
+        # Step 2: AI Transcription
         segments, info = model.transcribe(v_path, beam_size=5)
         output_file = f"Sub_{replied.id}.{mode}"
         
@@ -90,11 +90,11 @@ async def process_transcription(client, message, mode):
                 end = format_time(segment.end, mode)
                 f.write(f"{i}\n{start} --> {end}\n{segment.text.strip()}\n\n")
 
-        # Step 4: Upload to DEST_CHANNEL
+        # Step 4: Upload to DEST_CHANNEL (Permanent Storage)
         time_taken = f"{int(time.time() - start_time)}s"
-        caption = (f"✅ **Subtitles Ready!**\n\n"
+        caption = (f"✅ **Subtitles Generated**\n\n"
                    f"🌐 **Language:** {info.language.upper()}\n"
-                   f"⏱️ **Time Taken:** {time_taken}")
+                   f"⏱️ **Time:** {time_taken}")
         
         await client.send_document(
             chat_id=DEST_CHANNEL, 
@@ -102,13 +102,13 @@ async def process_transcription(client, message, mode):
             caption=caption
         )
         
-        await status.edit(f"✅ Kaam ho gaya lala! File channel pe bhej di hai.")
+        await status.edit(f"✅ Kaam ho gaya! File channel pe bhej di hai.")
 
     except Exception as e:
         await status.edit(f"❌ **Error:** {str(e)}")
     
     finally:
-        # ✅ Storage Clean (Render disk space bachane ke liye)
+        # ✅ DATA PROBLEM SOLVED: Temporary files delete karke disk saaf rakhega
         if v_path and os.path.exists(v_path): os.remove(v_path)
         if output_file and os.path.exists(output_file): os.remove(output_file)
 
@@ -116,7 +116,7 @@ async def process_transcription(client, message, mode):
 
 @app.on_message(filters.command("start"))
 async def start(client, message: Message):
-    await message.reply("<b>🔥 Subtitle Generator is Online!</b>\n\nReply to a video with:\n/srt - Get SRT File\n/vtt - Get VTT File")
+    await message.reply("<b>🔥 Subtitle Generator is Online!</b>\n\n/srt - Get SRT\n/vtt - Get VTT\n/delete - Clean Space\n/stats - Disk Info")
 
 @app.on_message(filters.command("srt") & filters.reply)
 async def srt_handler(client, message: Message):
@@ -126,10 +126,26 @@ async def srt_handler(client, message: Message):
 async def vtt_handler(client, message: Message):
     await process_transcription(client, message, "vtt")
 
+@app.on_message(filters.command("delete"))
+async def delete_junk(client, message: Message):
+    if not is_authorized(message): return
+    count = 0
+    for file in os.listdir():
+        if file.endswith((".srt", ".vtt", ".mp4", ".mkv")):
+            os.remove(file)
+            count += 1
+    await message.reply(f"🧹 {count} files delete karke disk saaf kar di hai!")
+
+@app.on_message(filters.command("stats"))
+async def get_stats(client, message: Message):
+    if not is_authorized(message): return
+    total, used, free = shutil.disk_usage("/")
+    stats_text = (f"💾 **Disk Stats:**\n\nUsed: {used // (2**20)} MB\nFree: {free // (2**20)} MB")
+    await message.reply(stats_text)
+
 if __name__ == "__main__":
-    # Start Flask thread for Port 10000 (Render bypass)
+    # Flask for Render Port 10000
     Thread(target=run_flask, daemon=True).start()
-    
-    # Start Telegram Bot
-    print("Bot is Starting...")
+    # Pyrogram Bot
+    print("Bot is starting...")
     app.run()

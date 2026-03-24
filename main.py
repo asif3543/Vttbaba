@@ -4,6 +4,8 @@ import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from faster_whisper import WhisperModel
+from flask import Flask
+from threading import Thread
 
 # ================= CONFIGURATION =================
 
@@ -11,7 +13,7 @@ API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-# Yahan default value 0 rakhi hai taaki crash na ho agar var missing ho
+# Target Channel jahan file bhejni hai
 DEST_CHANNEL = int(os.environ.get("DEST_CHANNEL", "-10023456789")) 
 
 OWNER_ID = 5344078567                    
@@ -20,9 +22,21 @@ ALLOWED_GROUPS = [-1003899919015]
 
 app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ✅ RAM PROBLEM SOLVED: Using tiny model with int8 compute
-# Isse Render ki 512MB RAM ful nahi hogi.
+# ✅ RAM MANAGEMENT: Tiny model with int8 compute (For Render 512MB)
 model = WhisperModel("tiny", device="cpu", compute_type="int8")
+
+# ================= PORT BINDING (For Render) =================
+
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def health_check():
+    return "Bot is Running Live!"
+
+def run_flask():
+    # Render hamesha PORT 10000 use karta hai
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host='0.0.0.0', port=port)
 
 # ================= UTILS =================
 
@@ -59,10 +73,10 @@ async def process_transcription(client, message, mode):
     output_file = None
     
     try:
-        # File download (Temporary storage for processing)
+        # File download (Temporary storage)
         v_path = await client.download_media(replied)
         
-        # AI Transcription logic
+        # AI Transcription logic (Auto detect language)
         segments, info = model.transcribe(v_path, beam_size=5)
         output_file = f"Sub_{replied.id}.{mode}"
         
@@ -73,7 +87,7 @@ async def process_transcription(client, message, mode):
                 end = format_time(segment.end, mode)
                 f.write(f"{i}\n{start} --> {end}\n{segment.text.strip()}\n\n")
 
-        # Result channel pe bhej raha hai
+        # Result channel pe upload karna
         time_taken = f"{int(time.time() - start_time)}s"
         caption = (f"✅ **Subtitles Generated**\n\n"
                    f"🌐 **Language:** {info.language.upper()}\n"
@@ -91,7 +105,7 @@ async def process_transcription(client, message, mode):
         await status.edit(f"❌ **Error:** {str(e)}")
     
     finally:
-        # ✅ STORAGE PROBLEM SOLVED: Kaam khatam hote hi delete
+        # ✅ Cleanup to avoid disk full error
         if v_path and os.path.exists(v_path): os.remove(v_path)
         if output_file and os.path.exists(output_file): os.remove(output_file)
 
@@ -110,5 +124,9 @@ async def vtt_handler(client, message: Message):
     await process_transcription(client, message, "vtt")
 
 if __name__ == "__main__":
+    # Start Dummy Web Server for Port 10000
+    Thread(target=run_flask).start()
+    
+    # Start Telegram Bot
+    print("Bot is Starting...")
     app.run()
-  

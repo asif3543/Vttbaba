@@ -10,33 +10,23 @@ from threading import Thread
 
 # ================= CONFIGURATION =================
 
-# IMPORTANT: Ensure these ENV variables are set before running the script
-API_ID = os.environ.get("API_ID")
+API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-# Default Destination Channel agar set na ho
 DEST_CHANNEL = int(os.environ.get("DEST_CHANNEL", "-10023456789")) 
 
 OWNER_ID = 5344078567                    
 ALLOWED_USERS = [5351848105]             
 ALLOWED_GROUPS = [-1003899919015]        
 
-# --- ENV CHECK ---
-if not all([API_ID, API_HASH, BOT_TOKEN]):
-    print("❌ ERROR: API_ID, API_HASH, or BOT_TOKEN environment variables are not set.")
-    exit(1)
-
-API_ID = int(API_ID) # Convert to int after checking existence
-
 app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ✅ PRE-LOADING MODEL: Isse transcription ke waqt delay nahi hoga
-print("⏳ Loading AI Model (Tiny) on CPU... Please wait.")
-# CPU performance ke liye int8 rakha hai. Yeh hi dheema chalega.
+print("⏳ Loading AI Model (Tiny)... Please wait.")
 model = WhisperModel("tiny", device="cpu", compute_type="int8")
 print("✅ AI Model Loaded Successfully!")
 
-# ================= PORT BINDING (For Uptime Monitoring) =================
+# ================= PORT BINDING =================
 
 flask_app = Flask(__name__)
 
@@ -45,11 +35,8 @@ def health_check():
     return "Bot is Running Live!"
 
 def run_flask():
-    # Ensure the port is available, default to 10000 if not set
     port = int(os.environ.get("PORT", 10000))
-    print(f"🌐 Flask Health Check Running on port {port}")
-    # use threaded=True for better concurrency with Pyrogram's async loop management
-    flask_app.run(host='0.0.0.0', port=port, threaded=True)
+    flask_app.run(host='0.0.0.0', port=port)
 
 # ================= UTILS =================
 
@@ -66,9 +53,7 @@ def format_time(seconds, mode="srt"):
     secs = int(seconds % 60)
     milis = int((seconds - int(seconds)) * 1000)
     if mode == "vtt":
-        # VTT format needs milliseconds separated by a dot (.)
         return f"{hours:02}:{minutes:02}:{secs:02}.{milis:03}"
-    # SRT format needs milliseconds separated by a comma (,)
     return f"{hours:02}:{minutes:02}:{secs:02},{milis:03}"
 
 # ================= CORE LOGIC =================
@@ -78,25 +63,23 @@ async def process_transcription(client, message, mode):
         return await message.reply("❌ Beta, tum authorized nahi ho!")
     
     replied = message.reply_to_message
-    # Check if replied message exists and has a video/document (assuming audio is attached as document)
-    if not replied or not (replied.video or (replied.document and 'audio' in replied.mime_type)):
-        return await message.reply(f"❌ Video file par reply karke `/{mode}` likho! (Ya audio file attach ki ho)")
+    # FIX: MIME type access corrected to replied.document.mime_type
+    if not replied or not (replied.video or (replied.document and 'audio' in replied.document.mime_type)):
+        return await message.reply(f"❌ Video ya Audio file par reply karke `/{mode}` likho!")
 
-    status = await message.reply(f"⏳ **Processing {mode.upper()}...**\nTranscribing audio on CPU, lambi audio files mein zyada time lagega. Sabar rakhein.")
+    status = await message.reply(f"⏳ **Processing {mode.upper()}...**\nTranscribing audio, thoda sabar rakho.")
     
     start_time = time.time()
     v_path = None
     output_file = None
     
     try:
-        # Download in root directory
-        temp_name = f"video_{replied.id}.mp4" # Use a generic extension for download
+        # Download in root
+        temp_name = f"video_{replied.id}.mp4"
         v_path = await client.download_media(replied, file_name=f"./{temp_name}")
         
-        # Transcription (SLOWEST PART on CPU)
-        # If you only have audio, faster-whisper extracts it automatically.
+        # Transcription (Using pre-loaded model)
         segments, info = model.transcribe(v_path, beam_size=5)
-        
         output_file = f"Sub_{replied.id}.{mode}"
         
         with open(output_file, "w", encoding="utf-8") as f:
@@ -104,34 +87,28 @@ async def process_transcription(client, message, mode):
             for i, segment in enumerate(segments, start=1):
                 start = format_time(segment.start, mode)
                 end = format_time(segment.end, mode)
-                # Ensure text strip and proper formatting
                 f.write(f"{i}\n{start} --> {end}\n{segment.text.strip()}\n\n")
 
         time_taken = f"{int(time.time() - start_time)}s"
         caption = (f"✅ **Subtitles Generated**\n\n"
                    f"🌐 **Language:** {info.language.upper()}\n"
-                   f"⏱️ **Time Taken:** {time_taken}\n\n"
-                   f"**Note:** Transcription was done on CPU, which is slow.")
+                   f"⏱️ **Time:** {time_taken}")
         
         await client.send_document(chat_id=DEST_CHANNEL, document=output_file, caption=caption)
-        await status.edit(f"✅ Kaam ho gaya! File channel (`{DEST_CHANNEL}`) pe bhej di hai. Total time: {time_taken}")
+        await status.edit(f"✅ Kaam ho gaya! File channel pe bhej di hai.")
 
     except Exception as e:
-        print(f"Transcription Error: {e}")
-        await status.edit(f"❌ **Error:** Transcription mein problem aayi: {str(e)}")
+        await status.edit(f"❌ **Error:** {str(e)}")
     
     finally:
-        # Cleanup downloaded file and generated subtitle file
         if v_path and os.path.exists(v_path): os.remove(v_path)
         if output_file and os.path.exists(output_file): os.remove(output_file)
-        print(f"Cleanup complete for files related to message ID {replied.id if replied else 'N/A'}.")
-
 
 # ================= HANDLERS =================
 
 @app.on_message(filters.command("start"))
 async def start(client, message: Message):
-    await message.reply("🔥 **Subtitle Generator Online!**\n\nReply to a Video/Audio and use:\n`/srt` or ` /vtt`")
+    await message.reply("🔥 **Subtitle Generator Online!**\n/srt | /vtt | /delete | /stats | /close | /clearall")
 
 @app.on_message(filters.command("srt") & filters.reply)
 async def srt_handler(client, message: Message):
@@ -146,27 +123,48 @@ async def delete_junk(client, message: Message):
     if not is_authorized(message): return
     count = 0
     for file in os.listdir("./"):
-        # Added more extensions and kept your cleaning logic
         if file.endswith((".srt", ".vtt", ".mp4", ".mkv", ".temp")):
             try:
                 os.remove(file)
                 count += 1
-            except Exception as e:
-                print(f"Could not delete {file}: {e}")
-    await message.reply(f"🧹 {count} junk files delete kar di hain!")
+            except Exception:
+                pass # Ignore if file is locked or missing
+    await message.reply(f"🧹 {count} local temporary files delete kar di hain!")
+
+# --- NEW COMMAND: /clearall ---
+@app.on_message(filters.command("clearall"))
+async def clear_all_junk(client, message: Message):
+    if not is_authorized(message): return
+    count = 0
+    for file in os.listdir("./"):
+        if file.endswith((".srt", ".vtt", ".mp4", ".mkv", ".temp")):
+            try:
+                os.remove(file)
+                count += 1
+            except Exception:
+                pass 
+    await message.reply(f"🗑️ **All Junk Files Cleared!**\n{count} files successfully deleted.")
+
+# --- NEW COMMAND: /close ---
+# Note: Pyrogram bot ko 'close' karne ke liye Client ko stop karna padta hai.
+# Iske liye process ko shutdown karna padega, jo bot ko offline kar dega.
+@app.on_message(filters.command("close"))
+async def close_bot(client, message: Message):
+    if message.from_user.id != OWNER_ID: # Sirf owner ko permission
+        return await message.reply("❌ Tum yeh command use nahi kar sakte.")
+        
+    await message.reply("🛑 **Shutting Down Bot...** Goodbye!")
+    # Client ko stop karke bot ko off karta hai.
+    await client.stop() 
+    # NOTE: Is command ke baad bot band ho jayega aur restart karna padega.
 
 @app.on_message(filters.command("stats"))
 async def get_stats(client, message: Message):
     if not is_authorized(message): return
-    try:
-        total, used, free = shutil.disk_usage("/")
-        await message.reply(f"💾 **Disk Stats:**\nUsed: {used // (2**30)} GB | Free: {free // (2**30)} GB")
-    except Exception as e:
-        await message.reply(f"❌ Disk stats fetch failed: {e}")
+    total, used, free = shutil.disk_usage("/")
+    await message.reply(f"💾 **Disk Stats:**\nUsed: {used // (2**20)} MB\nFree: {free // (2**20)} MB")
 
 if __name__ == "__main__":
-    # Start Flask in a separate thread so Pyrogram can run its main loop
     Thread(target=run_flask, daemon=True).start()
     print("Bot is Starting...")
-    # Pyrogram's run() handles the main asyncio loop
     app.run()

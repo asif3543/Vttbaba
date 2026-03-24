@@ -15,7 +15,7 @@ API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 PORT = os.environ.get("PORT")
 
-# Target Channel jahan bot file ko permanent save karega (Database solution)
+# Target Channel jahan bot file ko permanent save karega
 DEST_CHANNEL = int(os.environ.get("DEST_CHANNEL", "-10023456789")) 
 
 OWNER_ID = 5344078567                    
@@ -24,10 +24,10 @@ ALLOWED_GROUPS = [-1003899919015]
 
 app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ✅ RAM MANAGEMENT: Tiny model (Render Free 512MB RAM ke liye best)
+# ✅ RAM MANAGEMENT: Tiny model for Render Free (512MB RAM)
 model = WhisperModel("tiny", device="cpu", compute_type="int8")
 
-# ================= PORT BINDING (Render Bypass) =================
+# ================= PORT BINDING (Render Health Check) =================
 
 flask_app = Flask(__name__)
 
@@ -36,7 +36,7 @@ def health_check():
     return "Bot is Running Live!"
 
 def run_flask():
-    # Render default port 10000 detect karega
+    # Render hamesha environment variable se PORT uthayega
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host='0.0.0.0', port=port)
 
@@ -75,8 +75,9 @@ async def process_transcription(client, message, mode):
     output_file = None
     
     try:
-        # Step 1: Download to Render Disk
-        v_path = await client.download_media(replied)
+        # ✅ FIX: Explicit path set kiya hai `./` folder mein taaki downloads folder ka error na aaye
+        temp_name = f"video_{replied.id}.mp4"
+        v_path = await client.download_media(replied, file_name=f"./{temp_name}")
         
         # Step 2: AI Transcription
         segments, info = model.transcribe(v_path, beam_size=5)
@@ -90,7 +91,7 @@ async def process_transcription(client, message, mode):
                 end = format_time(segment.end, mode)
                 f.write(f"{i}\n{start} --> {end}\n{segment.text.strip()}\n\n")
 
-        # Step 4: Upload to DEST_CHANNEL (Permanent Storage)
+        # Step 4: Upload to DEST_CHANNEL
         time_taken = f"{int(time.time() - start_time)}s"
         caption = (f"✅ **Subtitles Generated**\n\n"
                    f"🌐 **Language:** {info.language.upper()}\n"
@@ -108,7 +109,7 @@ async def process_transcription(client, message, mode):
         await status.edit(f"❌ **Error:** {str(e)}")
     
     finally:
-        # ✅ DATA PROBLEM SOLVED: Temporary files delete karke disk saaf rakhega
+        # ✅ AUTO-CLEANUP: Files delete karke disk saaf rakhega
         if v_path and os.path.exists(v_path): os.remove(v_path)
         if output_file and os.path.exists(output_file): os.remove(output_file)
 
@@ -130,11 +131,12 @@ async def vtt_handler(client, message: Message):
 async def delete_junk(client, message: Message):
     if not is_authorized(message): return
     count = 0
-    for file in os.listdir():
-        if file.endswith((".srt", ".vtt", ".mp4", ".mkv")):
+    # Current directory (root) se junk saaf karega
+    for file in os.listdir("./"):
+        if file.endswith((".srt", ".vtt", ".mp4", ".mkv", ".temp")):
             os.remove(file)
             count += 1
-    await message.reply(f"🧹 {count} files delete karke disk saaf kar di hai!")
+    await message.reply(f"🧹 {count} files delete kar di hain!")
 
 @app.on_message(filters.command("stats"))
 async def get_stats(client, message: Message):
@@ -144,7 +146,7 @@ async def get_stats(client, message: Message):
     await message.reply(stats_text)
 
 if __name__ == "__main__":
-    # Flask for Render Port 10000
+    # Run Flask in background daemon thread
     Thread(target=run_flask, daemon=True).start()
     # Pyrogram Bot
     print("Bot is starting...")

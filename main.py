@@ -10,11 +10,12 @@ from threading import Thread
 
 # ================= CONFIGURATION =================
 
-
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-DEST_CHANNEL = int(os.getenv("DEST_CHANNEL", 0))
+# NOTE: Maine os.getenv() ko os.environ.get() se wapas badal diya hai 
+# jaise aapke original code mein tha, jisse compatibility bani rahe.
+API_ID = int(os.environ.get("API_ID"))
+API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+DEST_CHANNEL = int(os.environ.get("DEST_CHANNEL", 0)) # Agar 0 hai toh channel mein nahi jayega, error de sakta hai.
 
 OWNER_ID = 5344078567                    
 ALLOWED_USERS = [5351848105]             
@@ -64,7 +65,7 @@ async def process_transcription(client, message, mode):
         return await message.reply("❌ Beta, tum authorized nahi ho!")
     
     replied = message.reply_to_message
-    # FIX: MIME type access corrected to replied.document.mime_type
+    # MIME Type FIX is included here
     if not replied or not (replied.video or (replied.document and 'audio' in replied.document.mime_type)):
         return await message.reply(f"❌ Video ya Audio file par reply karke `/{mode}` likho!")
 
@@ -109,7 +110,7 @@ async def process_transcription(client, message, mode):
 
 @app.on_message(filters.command("start"))
 async def start(client, message: Message):
-    await message.reply("🔥 **Subtitle Generator Online!**\n/srt | /vtt | /delete | /stats | /close | /clearall")
+    await message.reply("🔥 **Subtitle Generator Online!**\n/srt | /vtt | /delete | /stats | /clearall")
 
 @app.on_message(filters.command("srt") & filters.reply)
 async def srt_handler(client, message: Message):
@@ -146,18 +147,8 @@ async def clear_all_junk(client, message: Message):
                 pass 
     await message.reply(f"🗑️ **All Junk Files Cleared!**\n{count} files successfully deleted.")
 
-# --- NEW COMMAND: /close ---
-# Note: Pyrogram bot ko 'close' karne ke liye Client ko stop karna padta hai.
-# Iske liye process ko shutdown karna padega, jo bot ko offline kar dega.
-@app.on_message(filters.command("close"))
-async def close_bot(client, message: Message):
-    if message.from_user.id != OWNER_ID: # Sirf owner ko permission
-        return await message.reply("❌ Tum yeh command use nahi kar sakte.")
-        
-    await message.reply("🛑 **Shutting Down Bot...** Goodbye!")
-    # Client ko stop karke bot ko off karta hai.
-    await client.stop() 
-    # NOTE: Is command ke baad bot band ho jayega aur restart karna padega.
+# --- /close command REMOVED --- 
+# Bot ko band karne ke bajaye, ab sirf /clearall kaam karega.
 
 @app.on_message(filters.command("stats"))
 async def get_stats(client, message: Message):

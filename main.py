@@ -13,9 +13,6 @@ from threading import Thread
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-PORT = os.environ.get("PORT")
-
-# Target Channel jahan bot file ko permanent save karega
 DEST_CHANNEL = int(os.environ.get("DEST_CHANNEL", "-10023456789")) 
 
 OWNER_ID = 5344078567                    
@@ -24,10 +21,12 @@ ALLOWED_GROUPS = [-1003899919015]
 
 app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ✅ RAM MANAGEMENT: Tiny model for Render Free (512MB RAM)
+# ✅ PRE-LOADING MODEL: Isse transcription ke waqt delay nahi hoga
+print("⏳ Loading AI Model (Tiny)... Please wait.")
 model = WhisperModel("tiny", device="cpu", compute_type="int8")
+print("✅ AI Model Loaded Successfully!")
 
-# ================= PORT BINDING (Render Health Check) =================
+# ================= PORT BINDING =================
 
 flask_app = Flask(__name__)
 
@@ -36,7 +35,6 @@ def health_check():
     return "Bot is Running Live!"
 
 def run_flask():
-    # Render hamesha environment variable se PORT uthayega
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host='0.0.0.0', port=port)
 
@@ -68,22 +66,21 @@ async def process_transcription(client, message, mode):
     if not replied or not (replied.video or replied.document):
         return await message.reply(f"❌ Video file par reply karke `/{mode}` likho!")
 
-    status = await message.reply(f"⏳ **Processing {mode.upper()}...**\nAudio process ho raha hai lala.")
+    status = await message.reply(f"⏳ **Processing {mode.upper()}...**\nTranscribing audio, thoda sabar rakho.")
     
     start_time = time.time()
     v_path = None
     output_file = None
     
     try:
-        # ✅ FIX: Explicit path set kiya hai `./` folder mein taaki downloads folder ka error na aaye
+        # Download in root
         temp_name = f"video_{replied.id}.mp4"
         v_path = await client.download_media(replied, file_name=f"./{temp_name}")
         
-        # Step 2: AI Transcription
+        # Transcription (Using pre-loaded model)
         segments, info = model.transcribe(v_path, beam_size=5)
         output_file = f"Sub_{replied.id}.{mode}"
         
-        # Step 3: File Creation
         with open(output_file, "w", encoding="utf-8") as f:
             if mode == "vtt": f.write("WEBVTT\n\n")
             for i, segment in enumerate(segments, start=1):
@@ -91,25 +88,18 @@ async def process_transcription(client, message, mode):
                 end = format_time(segment.end, mode)
                 f.write(f"{i}\n{start} --> {end}\n{segment.text.strip()}\n\n")
 
-        # Step 4: Upload to DEST_CHANNEL
         time_taken = f"{int(time.time() - start_time)}s"
         caption = (f"✅ **Subtitles Generated**\n\n"
                    f"🌐 **Language:** {info.language.upper()}\n"
                    f"⏱️ **Time:** {time_taken}")
         
-        await client.send_document(
-            chat_id=DEST_CHANNEL, 
-            document=output_file, 
-            caption=caption
-        )
-        
+        await client.send_document(chat_id=DEST_CHANNEL, document=output_file, caption=caption)
         await status.edit(f"✅ Kaam ho gaya! File channel pe bhej di hai.")
 
     except Exception as e:
         await status.edit(f"❌ **Error:** {str(e)}")
     
     finally:
-        # ✅ AUTO-CLEANUP: Files delete karke disk saaf rakhega
         if v_path and os.path.exists(v_path): os.remove(v_path)
         if output_file and os.path.exists(output_file): os.remove(output_file)
 
@@ -117,7 +107,7 @@ async def process_transcription(client, message, mode):
 
 @app.on_message(filters.command("start"))
 async def start(client, message: Message):
-    await message.reply("<b>🔥 Subtitle Generator is Online!</b>\n\n/srt - Get SRT\n/vtt - Get VTT\n/delete - Clean Space\n/stats - Disk Info")
+    await message.reply("🔥 **Subtitle Generator Online!**\n/srt | /vtt | /delete | /stats")
 
 @app.on_message(filters.command("srt") & filters.reply)
 async def srt_handler(client, message: Message):
@@ -131,7 +121,6 @@ async def vtt_handler(client, message: Message):
 async def delete_junk(client, message: Message):
     if not is_authorized(message): return
     count = 0
-    # Current directory (root) se junk saaf karega
     for file in os.listdir("./"):
         if file.endswith((".srt", ".vtt", ".mp4", ".mkv", ".temp")):
             os.remove(file)
@@ -142,12 +131,9 @@ async def delete_junk(client, message: Message):
 async def get_stats(client, message: Message):
     if not is_authorized(message): return
     total, used, free = shutil.disk_usage("/")
-    stats_text = (f"💾 **Disk Stats:**\n\nUsed: {used // (2**20)} MB\nFree: {free // (2**20)} MB")
-    await message.reply(stats_text)
+    await message.reply(f"💾 **Disk Stats:**\nUsed: {used // (2**20)} MB\nFree: {free // (2**20)} MB")
 
 if __name__ == "__main__":
-    # Run Flask in background daemon thread
     Thread(target=run_flask, daemon=True).start()
-    # Pyrogram Bot
-    print("Bot is starting...")
+    print("Bot is Starting...")
     app.run()

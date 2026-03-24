@@ -16,9 +16,9 @@ API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DEST_CHANNEL = int(os.environ.get("DEST_CHANNEL", 0))
 
-OWNER_ID = 5344078567                    
-ALLOWED_USERS = [5351848105]             
-ALLOWED_GROUPS = [-1003899919015]        
+OWNER_ID = 5344078567
+ALLOWED_USERS = [5351848105]
+ALLOWED_GROUPS = [-1003899919015]
 
 app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -28,49 +28,48 @@ print("⏳ Loading AI Model (Tiny)... Please wait.")
 model = WhisperModel("tiny", device="cpu", compute_type="int8")
 print("✅ AI Model Loaded Successfully!")
 
-# ================= PORT =================
+# ================= FLASK HEALTH CHECK =================
 
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def health_check():
-    return "Bot is Running Live!"
+    return "Bot is Running Live! ✅"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host='0.0.0.0', port=port)
+    flask_app.run(host='0.0.0.0', port=port, debug=False)
 
 # ================= UTILS =================
 
 def is_authorized(message: Message) -> bool:
     if not message.from_user:
         return False
-    u_id = message.from_user.id    
-    return u_id == OWNER_ID or u_id in ALLOWED_USERS or message.chat.id in ALLOWED_GROUPS
+    u_id = message.from_user.id
+    return (u_id == OWNER_ID or 
+            u_id in ALLOWED_USERS or 
+            message.chat.id in ALLOWED_GROUPS)
 
-def format_time(seconds, mode="srt"):
+def format_time(seconds: float, mode: str = "srt") -> str:
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
     ms = int((seconds - int(seconds)) * 1000)
+    
     if mode == "vtt":
-        return f"{h:02}:{m:02}:{s:02}.{ms:03}"
-    return f"{h:02}:{m:02}:{s:02},{ms:03}"
+        return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-# ================= CORE =================
+# ================= CORE TRANSCRIPTION =================
 
-async def process_transcription(client, message, mode):
-    if not is_authorized(message): 
-        return await message.reply("❌ Authorized nahi ho")
+async def process_transcription(client, message: Message, mode: str, copy_mode: bool = False):
+    if not is_authorized(message):
+        return await message.reply("❌ Authorized nahi ho bhai!")
 
     replied = message.reply_to_message
-
-    # ✅ FIX: All formats + safe mime check
-    if not replied or not (
-        replied.video or 
+    if not replied or not (replied.video or replied.audio or 
         (replied.document and replied.document.mime_type and 
-         ("video" in replied.document.mime_type or "audio" in replied.document.mime_type))
-    ):
+         ("video" in replied.document.mime_type or "audio" in replied.document.mime_type))):
         return await message.reply(f"❌ Video ya Audio file par reply karke `/{mode}` likho!")
 
     status = await message.reply(f"⏳ Processing {mode.upper()}...")
@@ -78,71 +77,121 @@ async def process_transcription(client, message, mode):
     start_time = time.time()
     v_path = None
     audio_path = None
-    output_file = None
+    sub_path = None
 
     try:
-        # ✅ ANY format download (no forced .mp4)
+        # Download media
+        status = await status.edit("⬇️ Downloading file...")
         v_path = await client.download_media(replied)
 
-        # 🔥 IMPORTANT: audio extract (CRASH FIX)
-        audio_path = f"audio_{replied.id}.mp3"
+        # Extract audio
+        status = await status.edit("🎵 Extracting audio...")
+        audio_path = f"audio_{replied.id}_{int(time.time())}.mp3"
 
         cmd = [
-            "ffmpeg",
-            "-i", v_path,
-            "-vn",
-            "-acodec", "mp3",
-            "-y",
-            audio_path
+            "ffmpeg", "-i", v_path,
+            "-vn", "-acodec", "mp3",
+            "-ar", "16000", "-ac", "1",
+            "-y", audio_path
         ]
 
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            return await status.edit(f"❌ Audio extraction failed:\n{stderr.decode()[:500]}")
 
         if not os.path.exists(audio_path):
-            return await status.edit("❌ Audio extract failed")
+            return await status.edit("❌ Audio file not created")
 
-        # ✅ Whisper on AUDIO (lightweight)
-        segments, info = model.transcribe(audio_path, beam_size=5)
+        # Transcribe with Whisper
+        status = await status.edit("🤖 Generating subtitles with AI...")
+        segments, info = model.transcribe(
+            audio_path, 
+            beam_size=5,
+            word_timestamps=False,
+            language=None  # auto detect
+        )
 
-        output_file = f"Sub_{replied.id}.{mode}"
-
-        with open(output_file, "w", encoding="utf-8") as f:
+        # Generate subtitle file
+        sub_path = f"Sub_{replied.id}.{mode}"
+        with open(sub_path, "w", encoding="utf-8") as f:
             if mode == "vtt":
                 f.write("WEBVTT\n\n")
 
             for i, segment in enumerate(segments, start=1):
                 start = format_time(segment.start, mode)
                 end = format_time(segment.end, mode)
-                f.write(f"{i}\n{start} --> {end}\n{segment.text.strip()}\n\n")
+                text = segment.text.strip()
+                f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
 
         time_taken = f"{int(time.time() - start_time)}s"
 
         caption = (
-            f"✅ Subtitles Generated\n"
-            f"🌐 {info.language.upper()}\n"
-            f"⏱️ {time_taken}"
+            f"✅ Subtitles Generated Successfully!\n"
+            f"🌐 Language: {info.language.upper()}\n"
+            f"⏱️ Time: {time_taken}\n"
+            f"📄 Format: {mode.upper()}"
         )
 
-        if DEST_CHANNEL == 0:
-            await message.reply_document(output_file, caption=caption)
+        if copy_mode:
+            # === COPY MODE: Send Video + Subtitle together ===
+            await status.edit("📤 Sending video with subtitles...")
+            await client.send_document(
+                message.chat.id,
+                sub_path,
+                caption=caption,
+                reply_to_message_id=replied.id
+            )
+            # Send original video with subtitle as attachment (for auto-burn option)
+            await client.send_video(
+                message.chat.id,
+                v_path,
+                caption="🎥 Original Video + Subtitles",
+                supports_streaming=True,
+                reply_to_message_id=replied.id
+            )
         else:
-            await client.send_document(DEST_CHANNEL, output_file, caption=caption)
+            # Normal mode: Send only subtitle
+            if DEST_CHANNEL and DEST_CHANNEL != 0:
+                await client.send_document(DEST_CHANNEL, sub_path, caption=caption)
+            else:
+                await client.send_document(
+                    message.chat.id, 
+                    sub_path, 
+                    caption=caption,
+                    reply_to_message_id=replied.id
+                )
 
-        await status.edit("✅ Kaam ho gaya!")
+        await status.edit("✅ Done!")
 
     except Exception as e:
-        await status.edit(f"❌ Error: {str(e)}")
+        await status.edit(f"❌ Error: {str(e)[:300]}")
+        print(f"Error: {e}")
 
     finally:
-        for f in [v_path, audio_path, output_file]:
-            if f and os.path.exists(f):
-                os.remove(f)
+        # Cleanup
+        for file in [v_path, audio_path, sub_path]:
+            if file and os.path.exists(file):
+                try:
+                    os.remove(file)
+                except:
+                    pass
 
 # ================= HANDLERS =================
 
 @app.on_message(filters.command("start"))
 async def start(client, message: Message):
-    await message.reply("🔥 Subtitle Generator Online!\n/srt | /vtt")
+    await message.reply(
+        "🔥 **Subtitle Generator Bot** is Online!\n\n"
+        "Commands:\n"
+        "`/srt`  → Generate .srt subtitles\n"
+        "`/vtt`  → Generate .vtt subtitles\n"
+        "`/copy` → Send video + subtitles together\n\n"
+        "Just reply to any video/audio file."
+    )
 
 @app.on_message(filters.command("srt") & filters.reply)
 async def srt_handler(client, message: Message):
@@ -152,9 +201,16 @@ async def srt_handler(client, message: Message):
 async def vtt_handler(client, message: Message):
     await process_transcription(client, message, "vtt")
 
+@app.on_message(filters.command("copy") & filters.reply)
+async def copy_handler(client, message: Message):
+    await process_transcription(client, message, "srt", copy_mode=True)
+
+# ================= UTILITY COMMANDS =================
+
 @app.on_message(filters.command("delete"))
 async def delete_junk(client, message: Message):
-    if not is_authorized(message): return
+    if not is_authorized(message): 
+        return
     count = 0
     for file in os.listdir("./"):
         if file.endswith((".srt", ".vtt", ".mp3", ".mp4", ".mkv", ".temp")):
@@ -163,30 +219,22 @@ async def delete_junk(client, message: Message):
                 count += 1
             except:
                 pass
-    await message.reply(f"🧹 {count} files delete ho gaye")
-
-@app.on_message(filters.command("clearall"))
-async def clear_all_junk(client, message: Message):
-    if not is_authorized(message): return
-    count = 0
-    for file in os.listdir("./"):
-        if file.endswith((".srt", ".vtt", ".mp3", ".mp4", ".mkv", ".temp")):
-            try:
-                os.remove(file)
-                count += 1
-            except:
-                pass 
-    await message.reply(f"🗑️ {count} files cleared!")
+    await message.reply(f"🧹 {count} temporary files deleted.")
 
 @app.on_message(filters.command("stats"))
 async def get_stats(client, message: Message):
-    if not is_authorized(message): return
+    if not is_authorized(message): 
+        return
     total, used, free = shutil.disk_usage("/")
-    await message.reply(f"💾 Used: {used//(2**20)}MB\nFree: {free//(2**20)}MB")
+    await message.reply(
+        f"💾 **Disk Usage**\n"
+        f"Used: {used//(1024*1024)} MB\n"
+        f"Free: {free//(1024*1024)} MB"
+    )
 
-# ================= RUN =================
+# ================= RUN BOT =================
 
 if __name__ == "__main__":
     Thread(target=run_flask, daemon=True).start()
-    print("Bot is Starting...")
+    print("🚀 Bot is Starting...")
     app.run()

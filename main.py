@@ -10,10 +10,11 @@ from threading import Thread
 
 # ================= CONFIGURATION =================
 
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-DEST_CHANNEL = int(os.environ.get("DEST_CHANNEL", "-10023456789")) 
+
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DEST_CHANNEL = int(os.getenv("DEST_CHANNEL", 0))
 
 OWNER_ID = 5344078567                    
 ALLOWED_USERS = [5351848105]             

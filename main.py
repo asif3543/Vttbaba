@@ -16,7 +16,7 @@ DEST_CHANNEL = int(os.environ.get("DEST_CHANNEL", "-10023456789"))
 
 OWNER_ID = 5344078567                    
 ALLOWED_USERS = [5351848105]             
-ALLOWED_GROUPS = [-1003629012882]        
+ALLOWED_GROUPS = [-1003899919015]        
 
 app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 

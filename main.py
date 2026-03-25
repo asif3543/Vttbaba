@@ -14,7 +14,7 @@ API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DEST_CHANNEL = int(os.environ.get("DEST_CHANNEL", 0))
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")   # ← Yeh zaroori hai!
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 if not GROQ_API_KEY:
     print("❌ ERROR: GROQ_API_KEY environment variable nahi mili!")
@@ -58,7 +58,7 @@ def format_time(seconds: float, mode: str = "srt") -> str:
         return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-# ================= CORE TRANSCRIPTION WITH GROQ =================
+# ================= CORE TRANSCRIPTION WITH GROQ (Fixed) =================
 async def process_transcription(client, message: Message, mode: str, copy_mode: bool = False):
     if not is_authorized(message):
         return await message.reply("❌ Authorized nahi ho bhai!")
@@ -81,7 +81,7 @@ async def process_transcription(client, message: Message, mode: str, copy_mode: 
         status = await status.edit("⬇️ Downloading file...")
         v_path = await client.download_media(replied)
 
-        # Extract audio (WAV - best for Whisper)
+        # Extract audio
         status = await status.edit("🎵 Extracting audio...")
         audio_path = f"audio_{replied.id}_{int(time.time())}.wav"
 
@@ -103,20 +103,21 @@ async def process_transcription(client, message: Message, mode: str, copy_mode: 
         if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1000:
             return await status.edit("❌ Audio file not created properly")
 
-        # ===================== GROQ TRANSCRIPTION =====================
+        # Groq Transcription
         status = await status.edit("🤖 Groq Whisper se subtitles bana rahe hain... (Bahut fast hai)")
 
         with open(audio_path, "rb") as file:
             transcription = groq_client.audio.transcriptions.create(
                 file=(os.path.basename(audio_path), file.read()),
-                model="whisper-large-v3-turbo",      # Fast + Good multilingual
+                model="whisper-large-v3-turbo",
                 response_format="verbose_json",
-                timestamp_granularities=["segment"], # Segments ke timestamps
-                language=None,                       # Auto detect (Hindi + English mix ke liye best)
+                timestamp_granularities=["segment"],   # segment timestamps ke liye
+                language=None,
                 temperature=0.0
             )
 
-        segments = transcription.segments if hasattr(transcription, 'segments') else []
+        # Groq ke response mein segments directly milte hain
+        segments = getattr(transcription, 'segments', [])
 
         if not segments:
             return await status.edit("❌ Koi speech detect nahi hui. Clear audio bhejo.")
@@ -136,9 +137,10 @@ async def process_transcription(client, message: Message, mode: str, copy_mode: 
 
         time_taken = f"{int(time.time() - start_time)}s"
 
+        lang = getattr(transcription, 'language', 'Auto')
         caption = (
             f"✅ Subtitles Generated with Groq Whisper!\n"
-            f"🌐 Language: {transcription.language.upper() if hasattr(transcription, 'language') else 'Auto'}\n"
+            f"🌐 Language: {lang.upper() if lang != 'Auto' else 'Auto'}\n"
             f"⏱️ Time: {time_taken}\n"
             f"📄 Format: {mode.upper()}\n"
             f"🔢 Segments: {len(segments)}"
@@ -167,11 +169,13 @@ async def process_transcription(client, message: Message, mode: str, copy_mode: 
         await status.edit("✅ Ho gaya! Subtitles aa gaye.")
 
     except Exception as e:
-        error_msg = str(e)
-        if "invalid_api_key" in error_msg.lower() or "authentication" in error_msg.lower():
+        error_msg = str(e).lower()
+        if "invalid_api_key" in error_msg or "authentication" in error_msg:
             await status.edit("❌ Groq API Key galat ya missing hai. Render Environment Variables check karo.")
+        elif "rate limit" in error_msg:
+            await status.edit("❌ Groq rate limit exceed ho gaya. Thodi der baad try karo.")
         else:
-            await status.edit(f"❌ Error: {error_msg[:400]}")
+            await status.edit(f"❌ Error: {str(e)[:400]}")
         print(f"Error: {e}")
 
     finally:

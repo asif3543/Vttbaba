@@ -2,4 +2,3 @@ pyrogram
 tgcrypto
 faster-whisper
 flask
-groq

@@ -5,7 +5,7 @@ import asyncio
 import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from faster_whisper import WhisperModel
+from groq import Groq
 from flask import Flask
 from threading import Thread
 
@@ -14,6 +14,10 @@ API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DEST_CHANNEL = int(os.environ.get("DEST_CHANNEL", 0))
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")   # ← Yeh zaroori hai!
+
+if not GROQ_API_KEY:
+    print("❌ ERROR: GROQ_API_KEY environment variable nahi mili!")
 
 OWNER_ID = 5344078567
 ALLOWED_USERS = [5351848105]
@@ -21,18 +25,15 @@ ALLOWED_GROUPS = [-1003899919015]
 
 app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ================= MODEL =================
-print("⏳ Loading AI Model (tiny)...")
-# compute_type int8_float16 bhi try kar sakte ho, lekin int8 safe hai
-model = WhisperModel("tiny", device="cpu", compute_type="int8")
-print("✅ AI Model Loaded Successfully!")
+# ================= GROQ CLIENT =================
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ================= FLASK HEALTH CHECK =================
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def health_check():
-    return "Bot is Running Live! ✅"
+    return "Bot is Running Live with Groq Whisper! ✅"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -57,7 +58,7 @@ def format_time(seconds: float, mode: str = "srt") -> str:
         return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-# ================= CORE TRANSCRIPTION (Fixed) =================
+# ================= CORE TRANSCRIPTION WITH GROQ =================
 async def process_transcription(client, message: Message, mode: str, copy_mode: bool = False):
     if not is_authorized(message):
         return await message.reply("❌ Authorized nahi ho bhai!")
@@ -68,7 +69,7 @@ async def process_transcription(client, message: Message, mode: str, copy_mode: 
          ("video" in replied.document.mime_type or "audio" in replied.document.mime_type))):
         return await message.reply(f"❌ Video ya Audio file par reply karke `/{mode}` likho!")
 
-    status = await message.reply(f"⏳ Processing {mode.upper()}... (Tiny model slow hai, thoda wait karo)")
+    status = await message.reply("⏳ Processing... Groq Whisper (Fast + Better Accuracy)")
 
     start_time = time.time()
     v_path = None
@@ -80,13 +81,13 @@ async def process_transcription(client, message: Message, mode: str, copy_mode: 
         status = await status.edit("⬇️ Downloading file...")
         v_path = await client.download_media(replied)
 
-        # Extract audio (better quality + error handling)
+        # Extract audio (WAV - best for Whisper)
         status = await status.edit("🎵 Extracting audio...")
-        audio_path = f"audio_{replied.id}_{int(time.time())}.wav"   # .wav better for whisper
+        audio_path = f"audio_{replied.id}_{int(time.time())}.wav"
 
         cmd = [
             "ffmpeg", "-i", v_path,
-            "-vn", "-acodec", "pcm_s16le",   # better than mp3 for transcription
+            "-vn", "-acodec", "pcm_s16le",
             "-ar", "16000", "-ac", "1",
             "-y", audio_path
         ]
@@ -100,25 +101,25 @@ async def process_transcription(client, message: Message, mode: str, copy_mode: 
             return await status.edit(f"❌ Audio extraction failed:\n{stderr.decode()[:500]}")
 
         if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1000:
-            return await status.edit("❌ Audio file not created or too small")
+            return await status.edit("❌ Audio file not created properly")
 
-        # Transcribe with better parameters
-        status = await status.edit("🤖 Generating subtitles with AI...\n(Tiny model use ho raha hai, accuracy kam ho sakti hai)")
+        # ===================== GROQ TRANSCRIPTION =====================
+        status = await status.edit("🤖 Groq Whisper se subtitles bana rahe hain... (Bahut fast hai)")
 
-        segments, info = model.transcribe(
-            audio_path,
-            beam_size=5,
-            word_timestamps=False,
-            language=None,          # auto detect
-            vad_filter=True,        # better silence removal
-            vad_parameters=dict(min_silence_duration_ms=500)
-        )
+        with open(audio_path, "rb") as file:
+            transcription = groq_client.audio.transcriptions.create(
+                file=(os.path.basename(audio_path), file.read()),
+                model="whisper-large-v3-turbo",      # Fast + Good multilingual
+                response_format="verbose_json",
+                timestamp_granularities=["segment"], # Segments ke timestamps
+                language=None,                       # Auto detect (Hindi + English mix ke liye best)
+                temperature=0.0
+            )
 
-        # Force list conversion (important fix!)
-        segments = list(segments)   # <--- yeh line missing thi bahut cases mein
+        segments = transcription.segments if hasattr(transcription, 'segments') else []
 
         if not segments:
-            return await status.edit("❌ No speech detected in audio. Koi clear audio nahi mila.")
+            return await status.edit("❌ Koi speech detect nahi hui. Clear audio bhejo.")
 
         # Generate subtitle file
         sub_path = f"Sub_{replied.id}.{mode}"
@@ -126,29 +127,29 @@ async def process_transcription(client, message: Message, mode: str, copy_mode: 
             if mode == "vtt":
                 f.write("WEBVTT\n\n")
 
-            for i, segment in enumerate(segments, start=1):
-                start = format_time(segment.start, mode)
-                end = format_time(segment.end, mode)
-                text = segment.text.strip()
-                if text:  # empty lines avoid karo
+            for i, seg in enumerate(segments, start=1):
+                start = format_time(seg.start, mode)
+                end = format_time(seg.end, mode)
+                text = seg.text.strip()
+                if text:
                     f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
 
         time_taken = f"{int(time.time() - start_time)}s"
 
         caption = (
-            f"✅ Subtitles Generated Successfully!\n"
-            f"🌐 Language: {info.language.upper()} (prob: {info.language_probability:.2f})\n"
+            f"✅ Subtitles Generated with Groq Whisper!\n"
+            f"🌐 Language: {transcription.language.upper() if hasattr(transcription, 'language') else 'Auto'}\n"
             f"⏱️ Time: {time_taken}\n"
             f"📄 Format: {mode.upper()}\n"
             f"🔢 Segments: {len(segments)}"
         )
 
         if copy_mode:
-            await status.edit("📤 Sending video + subtitles...")
+            await status.edit("📤 Video + Subtitles bhej rahe hain...")
             await client.send_document(message.chat.id, sub_path, caption=caption, reply_to_message_id=replied.id)
             await client.send_video(
                 message.chat.id, v_path,
-                caption="🎥 Original Video (subtitles ke saath use kar sakte ho)",
+                caption="🎥 Original Video (subtitles ke saath)",
                 supports_streaming=True,
                 reply_to_message_id=replied.id
             )
@@ -163,10 +164,14 @@ async def process_transcription(client, message: Message, mode: str, copy_mode: 
                     reply_to_message_id=replied.id
                 )
 
-        await status.edit("✅ Done! Subtitles aa gaye.")
+        await status.edit("✅ Ho gaya! Subtitles aa gaye.")
 
     except Exception as e:
-        await status.edit(f"❌ Error: {str(e)[:400]}")
+        error_msg = str(e)
+        if "invalid_api_key" in error_msg.lower() or "authentication" in error_msg.lower():
+            await status.edit("❌ Groq API Key galat ya missing hai. Render Environment Variables check karo.")
+        else:
+            await status.edit(f"❌ Error: {error_msg[:400]}")
         print(f"Error: {e}")
 
     finally:
@@ -182,13 +187,13 @@ async def process_transcription(client, message: Message, mode: str, copy_mode: 
 @app.on_message(filters.command("start"))
 async def start(client, message: Message):
     await message.reply(
-        "🔥 **Subtitle Generator Bot** Online!\n\n"
+        "🔥 **Subtitle Generator Bot** (Powered by Groq Whisper)\n\n"
         "Commands:\n"
         "`/srt`  → .srt subtitles\n"
         "`/vtt`  → .vtt subtitles\n"
-        "`/copy` → Video + subtitles dono bhejo\n\n"
+        "`/copy` → Video + subtitles dono\n\n"
         "Kisi bhi video/audio par reply karke command use karo.\n"
-        "Note: Tiny model hai → accuracy kam ho sakti hai Hindi mein."
+        "Ab bahut fast aur better accuracy milegi!"
     )
 
 @app.on_message(filters.command("srt") & filters.reply)
@@ -203,14 +208,14 @@ async def vtt_handler(client, message: Message):
 async def copy_handler(client, message: Message):
     await process_transcription(client, message, "srt", copy_mode=True)
 
-# ================= UTILITY COMMANDS =================
+# ================= UTILITY =================
 @app.on_message(filters.command("delete"))
 async def delete_junk(client, message: Message):
     if not is_authorized(message): 
         return
     count = 0
     for file in os.listdir("./"):
-        if file.endswith((".srt", ".vtt", ".wav", ".mp3", ".mp4", ".mkv", ".temp")):
+        if file.endswith((".srt", ".vtt", ".wav", ".mp4", ".mkv")):
             try:
                 os.remove(file)
                 count += 1
@@ -232,5 +237,5 @@ async def get_stats(client, message: Message):
 # ================= RUN BOT =================
 if __name__ == "__main__":
     Thread(target=run_flask, daemon=True).start()
-    print("🚀 Bot is Starting...")
+    print("🚀 Bot Starting with Groq Whisper...")
     app.run()

@@ -1,6 +1,6 @@
-FROM python:3.11-slim   # 3.11 better hai Groq SDK ke liye
+FROM python:3.11-slim
 
-# System dependencies
+# System dependencies install kar rahe hain
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     && apt-get clean \
@@ -8,12 +8,12 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Requirements pehle copy + install (cache better rahega)
+# Requirements pehle copy aur install (cache optimization ke liye)
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Baaki code
+# Baaki saara code copy
 COPY . .
 
 CMD ["python", "main.py"]

@@ -24,6 +24,7 @@ users = {}
 task_queue = deque()
 current_user = None
 queue_lock = asyncio.Lock()
+in_queue = set()
 
 # ================= WEB SERVER =================
 
@@ -55,6 +56,11 @@ async def hsub(_, message: Message):
     if not is_authorized(message):
         return await message.reply("❌ Not allowed")
 
+    user_id = message.from_user.id
+
+    if user_id in in_queue:
+        return await message.reply("❌ You already have a task in queue")
+
     replied = message.reply_to_message
     if not replied:
         return await message.reply("❌ Reply to video")
@@ -63,19 +69,19 @@ async def hsub(_, message: Message):
     if not media:
         return await message.reply("❌ Send valid video file")
 
-    users[message.from_user.id] = {
+    users[user_id] = {
         "video": media.file_id,
         "name": getattr(media, "file_name", "video.mp4")
     }
 
-    await message.reply("📄 Send subtitle file (.srt/.ass/.vtt)")
+    await message.reply("📄 Send subtitle (.srt/.ass/.vtt)")
 
 @app.on_message(filters.document)
 async def get_sub(_, message: Message):
-    user_id = message.from_user.id
-
     if not is_authorized(message):
         return
+
+    user_id = message.from_user.id
 
     if not message.document.file_name.lower().endswith((".srt", ".ass", ".vtt")):
         return
@@ -84,7 +90,7 @@ async def get_sub(_, message: Message):
         return await message.reply("❌ Send /hsub first")
 
     users[user_id]["sub"] = message.document.file_id
-    await message.reply("✏️ Send new filename (without extension) or type /skip")
+    await message.reply("✏️ Send new filename or type /skip")
 
 @app.on_message(filters.text & ~filters.command(["start", "hsub"]))
 async def rename_handler(_, message: Message):
@@ -106,19 +112,22 @@ async def rename_handler(_, message: Message):
         "msg": message
     })
 
+    in_queue.add(user_id)
     del users[user_id]
+
     await message.reply(f"✅ Added to queue: {len(task_queue)}")
 
 # ================= CORE =================
 
 async def split_video(input_path):
+    ext = os.path.splitext(input_path)[1]
     cmd = [
         "ffmpeg", "-i", input_path,
         "-c", "copy",
         "-map", "0",
         "-segment_time", "600",
         "-f", "segment",
-        "part_%03d.mp4"
+        f"part_%03d{ext}"
     ]
     process = await asyncio.create_subprocess_exec(*cmd)
     await process.wait()
@@ -127,7 +136,7 @@ async def split_video(input_path):
 async def encode_part(video, sub, output):
     cmd = [
         "ffmpeg", "-i", video,
-        "-vf", f"subtitles={sub}",
+        "-vf", f"subtitles='{sub}'",
         "-preset", "ultrafast",
         "-crf", "28",
         "-c:a", "copy",
@@ -138,11 +147,12 @@ async def encode_part(video, sub, output):
     return os.path.exists(output)
 
 async def process_task(task):
+    user_id = task["user"]
     msg = task["msg"]
     status = await msg.reply("⚙️ Downloading...")
 
-    v_path = await app.download_media(task["video"], file_name="input.mkv")
-    s_path = await app.download_media(task["sub"], file_name="sub.srt")
+    v_path = await app.download_media(task["video"], file_name="input_video")
+    s_path = await app.download_media(task["sub"], file_name="sub_file")
 
     base_name = os.path.splitext(task["name"])[0]
 
@@ -182,6 +192,9 @@ async def process_task(task):
         for f in [v_path, s_path]:
             if f and os.path.exists(f):
                 os.remove(f)
+
+        if user_id in in_queue:
+            in_queue.remove(user_id)
 
 # ================= QUEUE =================
 

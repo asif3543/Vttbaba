@@ -11,7 +11,7 @@ from aiohttp import web
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DEST_CHANNEL = os.getenv("DEST_CHANNEL")
+DEST_CHANNEL = int(os.getenv("DEST_CHANNEL")) # Ensure it's an integer
 
 OWNER_ID = 6815990712
 ALLOWED_GROUPS = [-1003810374456]
@@ -22,11 +22,10 @@ app = Client("EncoderBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 
 users = {}
 task_queue = deque()
-current_user = None
-queue_lock = asyncio.Lock()
 in_queue = set()
+queue_lock = asyncio.Lock()
 
-# ================= WEB SERVER =================
+# ================= WEB =================
 
 async def handle(request):
     return web.Response(text="Bot Running")
@@ -45,21 +44,22 @@ async def start_webserver():
 def is_authorized(message: Message):
     return message.chat.id in ALLOWED_GROUPS or message.from_user.id == OWNER_ID
 
-# ================= HANDLERS =================
+# ================= START =================
 
 @app.on_message(filters.command("start"))
 async def start(_, message: Message):
-    await message.reply("🔥 Hardsub Bot Ready!\n\nReply video with /hsub")
+    await message.reply("🔥 Bot Online!\nReply video with /hsub")
 
-@app.on_message(filters.command("hsub"))
+# ================= HSUB =================
+
+@app.on_message(filters.command(["hsub"]))
 async def hsub(_, message: Message):
     if not is_authorized(message):
         return await message.reply("❌ Not allowed")
 
     user_id = message.from_user.id
-
     if user_id in in_queue:
-        return await message.reply("❌ You already have a task in queue")
+        return await message.reply("❌ Already in queue")
 
     replied = message.reply_to_message
     if not replied:
@@ -67,40 +67,40 @@ async def hsub(_, message: Message):
 
     media = replied.video or replied.document
     if not media:
-        return await message.reply("❌ Send valid video file")
+        return await message.reply("❌ Invalid video")
 
     users[user_id] = {
         "video": media.file_id,
         "name": getattr(media, "file_name", "video.mp4")
     }
+    await message.reply("📄 Send subtitle file (.srt/.ass/.vtt)")
 
-    await message.reply("📄 Send subtitle (.srt/.ass/.vtt)")
+# ================= SUBTITLE =================
 
 @app.on_message(filters.document)
-async def get_sub(_, message: Message):
+async def subtitle(_, message: Message):
+    user_id = message.from_user.id
     if not is_authorized(message):
         return
-
-    user_id = message.from_user.id
 
     if not message.document.file_name.lower().endswith((".srt", ".ass", ".vtt")):
         return
 
     if user_id not in users:
-        return await message.reply("❌ Send /hsub first")
+        return await message.reply("❌ Use /hsub first")
 
     users[user_id]["sub"] = message.document.file_id
-    await message.reply("✏️ Send new filename or type /skip")
+    await message.reply("✏️ Send name or /skip")
 
-@app.on_message(filters.text & ~filters.command(["start", "hsub"]))
-async def rename_handler(_, message: Message):
+# ================= RENAME =================
+
+@app.on_message(filters.text)
+async def rename(_, message: Message):
     user_id = message.from_user.id
-
     if user_id not in users or "sub" not in users[user_id]:
         return
 
     name = message.text.strip()
-
     if name.lower() == "/skip":
         name = users[user_id]["name"]
 
@@ -114,115 +114,97 @@ async def rename_handler(_, message: Message):
 
     in_queue.add(user_id)
     del users[user_id]
-
-    await message.reply(f"✅ Added to queue: {len(task_queue)}")
+    await message.reply("✅ Added to queue")
 
 # ================= CORE =================
 
 async def split_video(input_path):
-    ext = os.path.splitext(input_path)[1]
     cmd = [
         "ffmpeg", "-i", input_path,
         "-c", "copy",
         "-map", "0",
         "-segment_time", "600",
         "-f", "segment",
-        f"part_%03d{ext}"
+        "part_%03d.mp4"
     ]
-    process = await asyncio.create_subprocess_exec(*cmd)
-    await process.wait()
-    return sorted([f for f in os.listdir() if f.startswith("part_")])
+    p = await asyncio.create_subprocess_exec(*cmd)
+    await p.wait()
+    # Check for parts specifically to avoid picking other files
+    return sorted([f for f in os.listdir() if f.startswith("part_") and f.endswith(".mp4")])
 
-async def encode_part(video, sub, output):
+async def encode(video, sub, out):
+    # Added logs to see if FFmpeg is working
     cmd = [
         "ffmpeg", "-i", video,
-        "-vf", f"subtitles='{sub}'",
+        "-vf", f"subtitles={sub}",
         "-preset", "ultrafast",
         "-crf", "28",
         "-c:a", "copy",
-        "-y", output
+        "-y", out
     ]
-    process = await asyncio.create_subprocess_exec(*cmd)
-    await process.wait()
-    return os.path.exists(output)
+    p = await asyncio.create_subprocess_exec(*cmd)
+    await p.wait()
+    return os.path.exists(out)
 
-async def process_task(task):
-    user_id = task["user"]
+async def process(task):
     msg = task["msg"]
-    status = await msg.reply("⚙️ Downloading...")
-
-    v_path = await app.download_media(task["video"], file_name="input_video")
-    s_path = await app.download_media(task["sub"], file_name="sub_file")
-
-    base_name = os.path.splitext(task["name"])[0]
+    status = await msg.reply("⚙️ Processing...")
 
     try:
-        await status.edit("✂️ Splitting video...")
-        parts = await split_video(v_path)
+        v = await app.download_media(task["video"], "video.mp4")
+        s = await app.download_media(task["sub"], "sub.srt")
 
-        count = 1
-        for part in parts:
-            out = f"{base_name}_Part{count}.mp4"
+        parts = await split_video(v)
+        if not parts:
+            return await status.edit("❌ Splitting failed")
 
-            await status.edit(f"🔥 Encoding Part {count}/{len(parts)}")
-
-            ok = await encode_part(part, s_path, out)
+        for i, part in enumerate(parts, 1):
+            out = f"{task['name']}_{i}.mp4"
+            ok = await encode(part, s, out)
+            
             if not ok:
-                return await status.edit("❌ Encode failed")
+                await status.edit(f"❌ Encoding failed at Part {i}")
+                break
 
-            await status.edit(f"📤 Uploading Part {count}")
-
-            await app.send_video(
-                chat_id=DEST_CHANNEL,
-                video=out,
-                caption=f"🎬 {base_name}\n✅ Part {count}",
-                supports_streaming=True
-            )
-
+            await app.send_video(DEST_CHANNEL, out, caption=f"{task['name']} Part {i}")
             os.remove(part)
             os.remove(out)
-            count += 1
 
-        await status.edit("✅ All parts uploaded!")
-
+        # Cleanup original files
+        if os.path.exists(v): os.remove(v)
+        if os.path.exists(s): os.remove(s)
+        
+        await status.edit("✅ All parts uploaded successfully!")
     except Exception as e:
-        await status.edit(f"❌ Error: {e}")
-
+        await status.edit(f"❌ Error: {str(e)}")
     finally:
-        for f in [v_path, s_path]:
-            if f and os.path.exists(f):
-                os.remove(f)
+        if task["user"] in in_queue:
+            in_queue.remove(task["user"])
 
-        if user_id in in_queue:
-            in_queue.remove(user_id)
-
-# ================= QUEUE =================
+# ================= WORKER =================
 
 async def worker():
-    global current_user
+    print("Worker started...")
     while True:
         if not task_queue:
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)
             continue
 
         async with queue_lock:
             task = task_queue.popleft()
-            current_user = task["user"]
 
         try:
-            await process_task(task)
-        except:
-            pass
-        finally:
-            current_user = None
+            await process(task)
+        except Exception as e:
+            print(f"Worker Error: {e}")
 
 # ================= MAIN =================
 
 async def main():
     await app.start()
     await start_webserver()
-    print("Bot Running...")
     asyncio.create_task(worker())
+    print("Bot is alive!")
     await idle()
 
 if __name__ == "__main__":

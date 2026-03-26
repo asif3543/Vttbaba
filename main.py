@@ -6,13 +6,14 @@ import subprocess
 from collections import deque
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
+from aiohttp import web   # ✅ PORT FIX
 
 # ================= CONFIG =================
 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DEST_CHANNEL = os.getenv("DEST_CHANNEL")  # channel username or ID
+DEST_CHANNEL = os.getenv("DEST_CHANNEL")
 
 OWNER_ID = 6815990712
 ALLOWED_USERS = [6815990712]
@@ -26,6 +27,20 @@ users = {}
 task_queue = deque()
 current_user = None
 queue_lock = asyncio.Lock()
+
+# ================= WEB SERVER (PORT FIX) =================
+
+async def handle(request):
+    return web.Response(text="Bot Running")
+
+async def start_webserver():
+    app_web = web.Application()
+    app_web.router.add_get("/", handle)
+    port = int(os.environ.get("PORT", 10000))
+    runner = web.AppRunner(app_web)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
 
 # ================= UTILS =================
 
@@ -54,7 +69,7 @@ async def hsub(_, message: Message):
 
     media = replied.video or replied.document
     users[message.from_user.id] = {"video": media.file_id}
-    await message.reply("📄 Send subtitle (.srt/.ass)")
+    await message.reply("📄 Send subtitle (.srt/.ass/.vtt)")
 
 @app.on_message(filters.document)
 async def get_sub(_, message: Message):
@@ -117,7 +132,7 @@ async def process_task(task):
     s_path = await app.download_media(task["sub"], file_name="sub.srt")
 
     try:
-        await status.edit("✂️ Splitting...")
+        await status.edit("✂️ Splitting video...")
         parts = await split_video(v_path)
 
         count = 1
@@ -142,7 +157,7 @@ async def process_task(task):
             os.remove(out)
             count += 1
 
-        await status.edit("✅ Done!")
+        await status.edit("✅ All parts uploaded!")
 
     except Exception as e:
         await status.edit(f"❌ Error: {e}")
@@ -176,6 +191,7 @@ async def worker():
 
 async def main():
     await app.start()
+    await start_webserver()  # ✅ PORT FIX
     print("Bot Running...")
     asyncio.create_task(worker())
     await idle()

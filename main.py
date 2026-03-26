@@ -1,12 +1,10 @@
 import os
-import time
-import json
 import asyncio
 import subprocess
 from collections import deque
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
-from aiohttp import web   # ✅ PORT FIX
+from aiohttp import web
 
 # ================= CONFIG =================
 
@@ -28,7 +26,7 @@ task_queue = deque()
 current_user = None
 queue_lock = asyncio.Lock()
 
-# ================= WEB SERVER (PORT FIX) =================
+# ================= WEB SERVER =================
 
 async def handle(request):
     return web.Response(text="Bot Running")
@@ -61,13 +59,16 @@ async def start(_, message: Message):
 @app.on_message(filters.command("hsub"))
 async def hsub(_, message: Message):
     if not is_authorized(message):
-        return
+        return await message.reply("❌ Not allowed")
 
     replied = message.reply_to_message
-    if not replied or not (replied.video or replied.document):
+    if not replied:
         return await message.reply("❌ Reply to video")
 
     media = replied.video or replied.document
+    if not media:
+        return await message.reply("❌ Invalid video file")
+
     users[message.from_user.id] = {"video": media.file_id}
     await message.reply("📄 Send subtitle (.srt/.ass/.vtt)")
 
@@ -82,7 +83,7 @@ async def get_sub(_, message: Message):
         return
 
     if user_id not in users:
-        return await message.reply("❌ Send video first")
+        return await message.reply("❌ Send /hsub first")
 
     task_queue.append({
         "user": user_id,
@@ -150,7 +151,8 @@ async def process_task(task):
             await app.send_video(
                 chat_id=DEST_CHANNEL,
                 video=out,
-                caption=f"✅ Part {count}"
+                caption=f"✅ Part {count}",
+                supports_streaming=True
             )
 
             os.remove(part)
@@ -191,7 +193,7 @@ async def worker():
 
 async def main():
     await app.start()
-    await start_webserver()  # ✅ PORT FIX
+    await start_webserver()
     print("Bot Running...")
     asyncio.create_task(worker())
     await idle()

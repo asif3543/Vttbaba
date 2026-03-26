@@ -9,7 +9,7 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DEST_CHANNEL = int(os.getenv("DEST_CHANNEL", 0))
-PORT = int(os.environ.get("PORT", 8080))  # Render free-tier port
+PORT = int(os.environ.get("PORT", 10000))  # Render free-tier port
 
 # ================= ACCESS CONTROL =================
 OWNER_ID = 5344078567

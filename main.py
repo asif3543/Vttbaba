@@ -2,6 +2,7 @@ import os
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from aiohttp import web  # <- HTTP server for Render
 
 # ================= CONFIG =================
 API_ID = int(os.getenv("API_ID"))
@@ -41,7 +42,6 @@ async def start(client, message: Message):
         "Reply video/document with <code>/nn-li New Name</code> to rename and send to channel."
     )
 
-# ---------------- Thumbnail ----------------
 @app.on_message(filters.command("tumb"))
 async def set_tumb(client, message: Message):
     if not is_authorized(message): return
@@ -57,7 +57,6 @@ async def save_tumb(client, message: Message):
     user_settings[user_id]["thumb"] = file_id
     await message.reply_text("✅ Thumbnail saved!")
 
-# ---------------- Format ----------------
 @app.on_message(filters.command("form"))
 async def set_format(client, message: Message):
     if not is_authorized(message): return
@@ -79,7 +78,6 @@ async def update_format(client, query):
     await query.answer()
     await query.message.edit(f"✅ Format set to: {fmt.capitalize()}")
 
-# ---------------- Cancel ----------------
 @app.on_message(filters.command("cancel"))
 async def cancel_task(client, message: Message):
     user_id = message.from_user.id
@@ -90,7 +88,6 @@ async def cancel_task(client, message: Message):
     else:
         await message.reply("⚠️ No active rename request found.")
 
-# ---------------- Refresh ----------------
 @app.on_message(filters.command("refresh"))
 async def refresh_settings(client, message: Message):
     user_id = message.from_user.id
@@ -98,7 +95,6 @@ async def refresh_settings(client, message: Message):
         user_settings[user_id] = {}
     await message.reply("🔄 Your settings have been reset. You can set new thumbnail and format now.")
 
-# ================= MAIN RENAME LOGIC =================
 @app.on_message(filters.command("nn-li") & filters.reply)
 async def rename_handler(client, message: Message):
     if not is_authorized(message):
@@ -118,7 +114,6 @@ async def rename_handler(client, message: Message):
     fmt = settings.get("format", "video")
 
     status = await message.reply("⏳ Processing your request...")
-
     file_id = replied.video.file_id if replied.video else replied.document.file_id
 
     async def send_file():
@@ -151,11 +146,26 @@ async def rename_handler(client, message: Message):
     task = asyncio.create_task(send_file())
     current_tasks[user_id] = task
 
+# ================= RENDER HTTP SERVER =================
+async def handle(request):
+    return web.Response(text="Rename Bot is Online!")
+
+async def start_http_server():
+    server_app = web.Application()
+    server_app.router.add_get("/", handle)
+    runner = web.AppRunner(server_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    print(f"🌐 HTTP server running on port {PORT}")
+
 # ================= RUN BOT =================
 async def main_loop():
-    async with app:
-        print("✅ Rename Bot is Online!")
-        await asyncio.Future()  # Keeps bot running forever
+    await asyncio.gather(
+        start_http_server(),  # HTTP server for Render port detection
+        app.start(),          # Pyrogram bot start
+        asyncio.Future()      # Keeps running forever
+    )
 
 if __name__ == "__main__":
     asyncio.run(main_loop())

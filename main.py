@@ -152,10 +152,12 @@ async def rename_handler(client, message: Message):
     current_tasks[user_id] = task
 
 # ================= RUN BOT =================
+import asyncio
+
 async def main():
-    await app.start()
-    print("✅ Rename Bot is Online!")
-    await app.idle()
+    async with app:
+        print("✅ Rename Bot is Online!")
+        await asyncio.Future()  # Keeps the bot running forever
 
 if __name__ == "__main__":
-    asyncio.get_event_loop().run_until_complete(main())
+    asyncio.run(main())

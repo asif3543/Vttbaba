@@ -11,7 +11,7 @@ from aiohttp import web
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DEST_CHANNEL = int(os.getenv("DEST_CHANNEL")) # Ensure it's an integer
+DEST_CHANNEL = os.getenv("DEST_CHANNEL")  # keep as string
 
 OWNER_ID = 6815990712
 ALLOWED_GROUPS = [-1003810374456]
@@ -48,16 +48,17 @@ def is_authorized(message: Message):
 
 @app.on_message(filters.command("start"))
 async def start(_, message: Message):
-    await message.reply("🔥 Bot Online!\nReply video with /hsub")
+    await message.reply("🔥 Bot Online!\n\nReply video with /hsub")
 
 # ================= HSUB =================
 
-@app.on_message(filters.command(["hsub"]))
+@app.on_message(filters.command("hsub"))
 async def hsub(_, message: Message):
     if not is_authorized(message):
         return await message.reply("❌ Not allowed")
 
     user_id = message.from_user.id
+
     if user_id in in_queue:
         return await message.reply("❌ Already in queue")
 
@@ -73,15 +74,17 @@ async def hsub(_, message: Message):
         "video": media.file_id,
         "name": getattr(media, "file_name", "video.mp4")
     }
+
     await message.reply("📄 Send subtitle file (.srt/.ass/.vtt)")
 
 # ================= SUBTITLE =================
 
 @app.on_message(filters.document)
 async def subtitle(_, message: Message):
-    user_id = message.from_user.id
     if not is_authorized(message):
         return
+
+    user_id = message.from_user.id
 
     if not message.document.file_name.lower().endswith((".srt", ".ass", ".vtt")):
         return
@@ -90,17 +93,19 @@ async def subtitle(_, message: Message):
         return await message.reply("❌ Use /hsub first")
 
     users[user_id]["sub"] = message.document.file_id
-    await message.reply("✏️ Send name or /skip")
+    await message.reply("✏️ Send filename or /skip")
 
 # ================= RENAME =================
 
-@app.on_message(filters.text)
+@app.on_message(filters.text & ~filters.command(["start", "hsub"]))
 async def rename(_, message: Message):
     user_id = message.from_user.id
+
     if user_id not in users or "sub" not in users[user_id]:
         return
 
     name = message.text.strip()
+
     if name.lower() == "/skip":
         name = users[user_id]["name"]
 
@@ -114,6 +119,7 @@ async def rename(_, message: Message):
 
     in_queue.add(user_id)
     del users[user_id]
+
     await message.reply("✅ Added to queue")
 
 # ================= CORE =================
@@ -129,14 +135,13 @@ async def split_video(input_path):
     ]
     p = await asyncio.create_subprocess_exec(*cmd)
     await p.wait()
-    # Check for parts specifically to avoid picking other files
+
     return sorted([f for f in os.listdir() if f.startswith("part_") and f.endswith(".mp4")])
 
 async def encode(video, sub, out):
-    # Added logs to see if FFmpeg is working
     cmd = [
         "ffmpeg", "-i", video,
-        "-vf", f"subtitles={sub}",
+        "-vf", f"subtitles='{sub}'",
         "-preset", "ultrafast",
         "-crf", "28",
         "-c:a", "copy",
@@ -144,10 +149,13 @@ async def encode(video, sub, out):
     ]
     p = await asyncio.create_subprocess_exec(*cmd)
     await p.wait()
+
     return os.path.exists(out)
 
 async def process(task):
+    user_id = task["user"]
     msg = task["msg"]
+
     status = await msg.reply("⚙️ Processing...")
 
     try:
@@ -155,31 +163,43 @@ async def process(task):
         s = await app.download_media(task["sub"], "sub.srt")
 
         parts = await split_video(v)
+
         if not parts:
             return await status.edit("❌ Splitting failed")
 
         for i, part in enumerate(parts, 1):
             out = f"{task['name']}_{i}.mp4"
-            ok = await encode(part, s, out)
-            
-            if not ok:
-                await status.edit(f"❌ Encoding failed at Part {i}")
-                break
 
-            await app.send_video(DEST_CHANNEL, out, caption=f"{task['name']} Part {i}")
+            await status.edit(f"🔥 Encoding Part {i}/{len(parts)}")
+
+            ok = await encode(part, s, out)
+            if not ok:
+                return await status.edit(f"❌ Failed at part {i}")
+
+            await status.edit(f"📤 Uploading Part {i}")
+
+            await app.send_video(
+                chat_id=DEST_CHANNEL,
+                video=out,
+                caption=f"🎬 {task['name']} Part {i}",
+                supports_streaming=True
+            )
+
             os.remove(part)
             os.remove(out)
 
-        # Cleanup original files
-        if os.path.exists(v): os.remove(v)
-        if os.path.exists(s): os.remove(s)
-        
-        await status.edit("✅ All parts uploaded successfully!")
+        await status.edit("✅ Done!")
+
     except Exception as e:
-        await status.edit(f"❌ Error: {str(e)}")
+        await status.edit(f"❌ Error: {e}")
+
     finally:
-        if task["user"] in in_queue:
-            in_queue.remove(task["user"])
+        for f in ["video.mp4", "sub.srt"]:
+            if os.path.exists(f):
+                os.remove(f)
+
+        if user_id in in_queue:
+            in_queue.remove(user_id)
 
 # ================= WORKER =================
 
@@ -187,7 +207,7 @@ async def worker():
     print("Worker started...")
     while True:
         if not task_queue:
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
             continue
 
         async with queue_lock:
@@ -196,7 +216,7 @@ async def worker():
         try:
             await process(task)
         except Exception as e:
-            print(f"Worker Error: {e}")
+            print("Worker Error:", e)
 
 # ================= MAIN =================
 
@@ -204,7 +224,7 @@ async def main():
     await app.start()
     await start_webserver()
     asyncio.create_task(worker())
-    print("Bot is alive!")
+    print("Bot Running...")
     await idle()
 
 if __name__ == "__main__":

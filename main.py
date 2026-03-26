@@ -4,6 +4,7 @@ import subprocess
 from collections import deque
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
+from pyrogram.errors import FloodWait
 from aiohttp import web
 
 # ================= CONFIG =================
@@ -11,7 +12,7 @@ from aiohttp import web
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DEST_CHANNEL = os.getenv("DEST_CHANNEL")  # keep as string
+DEST_CHANNEL = os.getenv("DEST_CHANNEL")
 
 OWNER_ID = 6815990712
 ALLOWED_GROUPS = [-1003810374456]
@@ -44,11 +45,20 @@ async def start_webserver():
 def is_authorized(message: Message):
     return message.chat.id in ALLOWED_GROUPS or message.from_user.id == OWNER_ID
 
-# ================= START =================
+# ================= COMMANDS =================
 
 @app.on_message(filters.command("start"))
 async def start(_, message: Message):
     await message.reply("🔥 Bot Online!\n\nReply video with /hsub")
+
+@app.on_message(filters.command("refresh"))
+async def refresh(_, message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    users.clear()
+    task_queue.clear()
+    in_queue.clear()
+    await message.reply("♻️ Refreshed")
 
 # ================= HSUB =================
 
@@ -75,7 +85,7 @@ async def hsub(_, message: Message):
         "name": getattr(media, "file_name", "video.mp4")
     }
 
-    await message.reply("📄 Send subtitle file (.srt/.ass/.vtt)")
+    await message.reply("📄 Send subtitle (.srt/.ass/.vtt)")
 
 # ================= SUBTITLE =================
 
@@ -97,7 +107,7 @@ async def subtitle(_, message: Message):
 
 # ================= RENAME =================
 
-@app.on_message(filters.text & ~filters.command(["start", "hsub"]))
+@app.on_message(filters.text & ~filters.command(["start", "hsub", "refresh"]))
 async def rename(_, message: Message):
     user_id = message.from_user.id
 
@@ -141,7 +151,7 @@ async def split_video(input_path):
 async def encode(video, sub, out):
     cmd = [
         "ffmpeg", "-i", video,
-        "-vf", f"subtitles='{sub}'",
+        "-vf", f"subtitles={sub}",
         "-preset", "ultrafast",
         "-crf", "28",
         "-c:a", "copy",
@@ -204,7 +214,6 @@ async def process(task):
 # ================= WORKER =================
 
 async def worker():
-    print("Worker started...")
     while True:
         if not task_queue:
             await asyncio.sleep(3)
@@ -221,11 +230,19 @@ async def worker():
 # ================= MAIN =================
 
 async def main():
-    await app.start()
+    while True:
+        try:
+            await app.start()
+            print("Bot Started")
+            break
+        except FloodWait as e:
+            print(f"Waiting {e.value}s")
+            await asyncio.sleep(e.value)
+
     await start_webserver()
     asyncio.create_task(worker())
     print("Bot Running...")
     await idle()
 
 if __name__ == "__main__":
-    asyncio.get_event_loop().run_until_complete(main())
+    asyncio.run(main())

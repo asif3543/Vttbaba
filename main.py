@@ -14,7 +14,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DEST_CHANNEL = os.getenv("DEST_CHANNEL")
 
 OWNER_ID = 6815990712
-ALLOWED_USERS = [6815990712]
 ALLOWED_GROUPS = [-1003810374456]
 
 app = Client("EncoderBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -40,21 +39,16 @@ async def start_webserver():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-# ================= UTILS =================
+# ================= AUTH =================
 
 def is_authorized(message: Message):
-    if not message.from_user:
-        return False
-    u_id = message.from_user.id
-    if message.text and message.text.startswith("/start"):
-        return True
-    return u_id == OWNER_ID or u_id in ALLOWED_USERS or message.chat.id in ALLOWED_GROUPS
+    return message.chat.id in ALLOWED_GROUPS or message.from_user.id == OWNER_ID
 
 # ================= HANDLERS =================
 
 @app.on_message(filters.command("start"))
 async def start(_, message: Message):
-    await message.reply("🔥 Bot Online!\n\nReply video with /hsub")
+    await message.reply("🔥 Hardsub Bot Ready!\n\nReply video with /hsub")
 
 @app.on_message(filters.command("hsub"))
 async def hsub(_, message: Message):
@@ -67,17 +61,21 @@ async def hsub(_, message: Message):
 
     media = replied.video or replied.document
     if not media:
-        return await message.reply("❌ Invalid video file")
+        return await message.reply("❌ Send valid video file")
 
-    users[message.from_user.id] = {"video": media.file_id}
-    await message.reply("📄 Send subtitle (.srt/.ass/.vtt)")
+    users[message.from_user.id] = {
+        "video": media.file_id,
+        "name": getattr(media, "file_name", "video.mp4")
+    }
+
+    await message.reply("📄 Send subtitle file (.srt/.ass/.vtt)")
 
 @app.on_message(filters.document)
 async def get_sub(_, message: Message):
+    user_id = message.from_user.id
+
     if not is_authorized(message):
         return
-
-    user_id = message.from_user.id
 
     if not message.document.file_name.lower().endswith((".srt", ".ass", ".vtt")):
         return
@@ -85,10 +83,26 @@ async def get_sub(_, message: Message):
     if user_id not in users:
         return await message.reply("❌ Send /hsub first")
 
+    users[user_id]["sub"] = message.document.file_id
+    await message.reply("✏️ Send new filename (without extension) or type /skip")
+
+@app.on_message(filters.text & ~filters.command(["start", "hsub"]))
+async def rename_handler(_, message: Message):
+    user_id = message.from_user.id
+
+    if user_id not in users or "sub" not in users[user_id]:
+        return
+
+    name = message.text.strip()
+
+    if name.lower() == "/skip":
+        name = users[user_id]["name"]
+
     task_queue.append({
         "user": user_id,
         "video": users[user_id]["video"],
-        "sub": message.document.file_id,
+        "sub": users[user_id]["sub"],
+        "name": name,
         "msg": message
     })
 
@@ -108,9 +122,7 @@ async def split_video(input_path):
     ]
     process = await asyncio.create_subprocess_exec(*cmd)
     await process.wait()
-
-    parts = sorted([f for f in os.listdir() if f.startswith("part_")])
-    return parts
+    return sorted([f for f in os.listdir() if f.startswith("part_")])
 
 async def encode_part(video, sub, output):
     cmd = [
@@ -129,8 +141,10 @@ async def process_task(task):
     msg = task["msg"]
     status = await msg.reply("⚙️ Downloading...")
 
-    v_path = await app.download_media(task["video"], file_name="input.mp4")
+    v_path = await app.download_media(task["video"], file_name="input.mkv")
     s_path = await app.download_media(task["sub"], file_name="sub.srt")
+
+    base_name = os.path.splitext(task["name"])[0]
 
     try:
         await status.edit("✂️ Splitting video...")
@@ -138,7 +152,7 @@ async def process_task(task):
 
         count = 1
         for part in parts:
-            out = f"out_{count}.mp4"
+            out = f"{base_name}_Part{count}.mp4"
 
             await status.edit(f"🔥 Encoding Part {count}/{len(parts)}")
 
@@ -151,7 +165,7 @@ async def process_task(task):
             await app.send_video(
                 chat_id=DEST_CHANNEL,
                 video=out,
-                caption=f"✅ Part {count}",
+                caption=f"🎬 {base_name}\n✅ Part {count}",
                 supports_streaming=True
             )
 

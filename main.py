@@ -1,14 +1,11 @@
-import os
-import asyncio
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
-
 # ================= CONFIG =================
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DEST_CHANNEL = int(os.getenv("DEST_CHANNEL", 0))
-PORT = int(os.getenv("PORT", 8080))  # Render free-tier port
+
+# Render free-tier requires a port for web service
+PORT = int(os.environ.get("PORT", 8080))
 
 # ================= ACCESS CONTROL =================
 OWNER_ID = 5344078567
@@ -156,8 +153,9 @@ import asyncio
 
 async def main():
     async with app:
+        await keep_alive()       # <- optional, agar tumne HTTP server banaya hai port ke liye
         print("✅ Rename Bot is Online!")
-        await asyncio.Future()  # Keeps the bot running forever
+        await asyncio.Future()   # Keeps the bot running forever
 
 if __name__ == "__main__":
     asyncio.run(main())

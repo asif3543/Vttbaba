@@ -8,9 +8,7 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DEST_CHANNEL = int(os.getenv("DEST_CHANNEL", 0))
-
-# Render free-tier requires a port for web service
-PORT = int(os.environ.get("PORT", 8080))
+PORT = int(os.environ.get("PORT", 8080))  # Render free-tier port
 
 # ================= ACCESS CONTROL =================
 OWNER_ID = 5344078567
@@ -25,8 +23,8 @@ def is_authorized(message: Message) -> bool:
     return False
 
 # ================= IN-MEMORY SETTINGS =================
-user_settings = {}  # {user_id: {"thumb": file_id, "format": "video"}}
-current_tasks = {}  # {user_id: asyncio.Task}
+user_settings = {}     # {user_id: {"thumb": file_id, "format": "video"}}
+current_tasks = {}     # {user_id: asyncio.Task}
 
 # ================= BOT INIT =================
 app = Client("RenameBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -43,7 +41,7 @@ async def start(client, message: Message):
         "Reply video/document with <code>/nn-li New Name</code> to rename and send to channel."
     )
 
-# Set Thumbnail
+# ---------------- Thumbnail ----------------
 @app.on_message(filters.command("tumb"))
 async def set_tumb(client, message: Message):
     if not is_authorized(message): return
@@ -59,7 +57,7 @@ async def save_tumb(client, message: Message):
     user_settings[user_id]["thumb"] = file_id
     await message.reply_text("✅ Thumbnail saved!")
 
-# Select Format
+# ---------------- Format ----------------
 @app.on_message(filters.command("form"))
 async def set_format(client, message: Message):
     if not is_authorized(message): return
@@ -81,7 +79,7 @@ async def update_format(client, query):
     await query.answer()
     await query.message.edit(f"✅ Format set to: {fmt.capitalize()}")
 
-# ================= CANCEL COMMAND =================
+# ---------------- Cancel ----------------
 @app.on_message(filters.command("cancel"))
 async def cancel_task(client, message: Message):
     user_id = message.from_user.id
@@ -92,7 +90,7 @@ async def cancel_task(client, message: Message):
     else:
         await message.reply("⚠️ No active rename request found.")
 
-# ================= REFRESH COMMAND =================
+# ---------------- Refresh ----------------
 @app.on_message(filters.command("refresh"))
 async def refresh_settings(client, message: Message):
     user_id = message.from_user.id
@@ -154,13 +152,10 @@ async def rename_handler(client, message: Message):
     current_tasks[user_id] = task
 
 # ================= RUN BOT =================
-import asyncio
-
-async def main():
+async def main_loop():
     async with app:
-        await keep_alive()       # <- optional, agar tumne HTTP server banaya hai port ke liye
         print("✅ Rename Bot is Online!")
-        await asyncio.Future()   # Keeps the bot running forever
+        await asyncio.Future()  # Keeps bot running forever
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main_loop())

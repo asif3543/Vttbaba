@@ -20,7 +20,7 @@ PORT = os.getenv("PORT")
 OWNER_ID = 5344078567                    
 ALLOWED_USERS = [5351848105]             
 ALLOWED_GROUPS = [-1003899919015] 
-PORT = [8080]
+PORT = [10000]
 
 app = Client("EncoderBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -235,6 +235,21 @@ async def main():
     print("Bot is Online!")
     asyncio.create_task(queue_worker())
     await idle()
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+def run_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    server.serve_forever()
+
+threading.Thread(target=run_server).start()
 
 if __name__ == "__main__":
     asyncio.get_event_loop().run_until_complete(main())

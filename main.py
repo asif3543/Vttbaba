@@ -1,8 +1,8 @@
 import os
 import asyncio
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
-from aiohttp import web  # <- HTTP server for Render
+from aiohttp import web
 
 # ================= CONFIG =================
 API_ID = int(os.getenv("API_ID"))
@@ -161,11 +161,10 @@ async def start_http_server():
 
 # ================= RUN BOT =================
 async def main_loop():
-    await asyncio.gather(
-        start_http_server(),  # HTTP server for Render port detection
-        app.start(),          # Pyrogram bot start
-        asyncio.Future()      # Keeps running forever
-    )
+    await start_http_server()  # Start Render HTTP server
+    await app.start()          # Start Pyrogram bot
+    print("✅ Rename Bot is Online and listening for messages!")
+    await idle()               # Keep bot running and listening
 
 if __name__ == "__main__":
     asyncio.run(main_loop())

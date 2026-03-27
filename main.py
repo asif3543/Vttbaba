@@ -2,12 +2,13 @@ import os
 import time
 import asyncio
 import gc
-from collections import deque
 import threading
+import tempfile
+from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from faster_whisper import WhisperModel
 from pyrogram import Client, filters, idle
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from huggingface_hub import login
 
 # ================= CONFIG =================
@@ -15,13 +16,12 @@ API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 HF_TOKEN = os.getenv("HF_TOKEN", "")
-DEST_CHANNEL = int(os.getenv("DEST_CHANNEL", "0"))
-
+DEST_CHANNEL = int(os.getenv("DEST_CHANNEL", "0"))  # ya username bhi de sakte ho
 OWNER_ID = 5344078567
 ALLOWED_USERS = [5344078567]
 ALLOWED_GROUPS = [-1003899919015]
 
-PORT = int(os.getenv("PORT", 10000))   # Render ke liye important
+PORT = int(os.getenv("PORT", 10000))  # Render ke liye
 
 # ================= DUMMY HTTP SERVER FOR RENDER =================
 class HealthHandler(BaseHTTPRequestHandler):
@@ -45,11 +45,15 @@ app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 task_queue = deque()
 queue_lock = asyncio.Lock()
 is_processing = False
-
 model = None
 model_lock = asyncio.Lock()
 
-# ================= UTILS (same as before) =================
+# Per-user temporary storage for rename logic
+users_data = {}
+in_queue = set()
+current_encoding = {}
+
+# ================= UTILS =================
 async def safe_reply(message: Message, text: str):
     try:
         return await message.reply_text(text)
@@ -70,7 +74,6 @@ def format_timestamp(seconds: float, fmt: str):
     td = time.gmtime(seconds)
     ms = int((seconds % 1) * 1000)
     cs = int((seconds % 1) * 100)
-
     if fmt == "srt":
         return f"{time.strftime('%H:%M:%S', td)},{ms:03d}"
     elif fmt == "vtt":
@@ -79,7 +82,22 @@ def format_timestamp(seconds: float, fmt: str):
         ts = time.strftime('%H:%M:%S', td)
         return f"{ts[1:] if ts.startswith('0') else ts}.{cs:02d}"
 
-# ================= MODEL (same) =================
+async def download_with_verification(client, file_id, attempts=5):
+    """Reliable download with retry and verification."""
+    temp_dir = tempfile.gettempdir()
+    base_name = f"temp_{int(time.time())}_{file_id}"
+    for attempt in range(attempts):
+        temp_file = os.path.join(temp_dir, f"{base_name}_{attempt}")
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+            path = await client.download_media(file_id, file_name=temp_file)
+            if path and os.path.exists(path) and os.path.getsize(path) > 0:
+                return path
+        except Exception as e:
+            await asyncio.sleep(2*(attempt+1))
+    raise Exception("Download failed after multiple attempts")
+
 async def get_model():
     global model
     async with model_lock:
@@ -91,7 +109,6 @@ async def get_model():
                     print("✅ HF Login Successful")
                 except Exception as e:
                     print(f"HF Login Error: {e}")
-
             try:
                 model = WhisperModel(
                     "tiny",
@@ -115,7 +132,6 @@ async def get_model():
                 print("✅ Model Loaded with float32 fallback!")
         return model
 
-# ================= TRANSCRIBE (same) =================
 def run_transcription(model, audio_path, out_file, fmt):
     try:
         segments, info = model.transcribe(
@@ -124,15 +140,12 @@ def run_transcription(model, audio_path, out_file, fmt):
             vad_filter=True,
             word_timestamps=False
         )
-        print(f"Detected language: {info.language} (prob: {info.language_probability:.2f})")
-
         has_data = False
         with open(out_file, "w", encoding="utf-8") as f:
             if fmt == "vtt":
                 f.write("WEBVTT\n\n")
             elif fmt == "ass":
                 f.write("[Script Info]\nScriptType: v4.00+\n\n[Events]\nFormat: Layer, Start, End, Style, Text\n")
-
             for i, seg in enumerate(segments, 1):
                 text = seg.text.strip()
                 if not text:
@@ -140,20 +153,18 @@ def run_transcription(model, audio_path, out_file, fmt):
                 has_data = True
                 start = format_timestamp(seg.start, fmt)
                 end = format_timestamp(seg.end, fmt)
-
                 if fmt == "srt":
                     f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
                 elif fmt == "vtt":
                     f.write(f"{start} --> {end}\n{text}\n\n")
                 else:
                     f.write(f"Dialogue: 0,{start},{end},Default,{text}\n")
-
         return has_data
     except Exception as e:
         print(f"Transcription Error: {e}")
         return False
 
-# ================= COMMANDS (same) =================
+# ================= COMMANDS =================
 @app.on_message(filters.command("start"))
 async def start_cmd(_, message: Message):
     if await is_authorized(message):
@@ -163,116 +174,76 @@ async def start_cmd(_, message: Message):
 async def handle_request(_, message: Message):
     if not await is_authorized(message):
         return
-
     reply = message.reply_to_message
     if not reply or not (reply.video or reply.document):
         return await safe_reply(message, "❌ Reply to a video or document file!")
 
     fmt = message.command[0].lower()
+    users_data[message.from_user.id] = {
+        "media": reply.video or reply.document,
+        "format": fmt,
+        "chat_id": message.chat.id
+    }
+    await safe_reply(message, f"✅ Added to queue (Position: {len(task_queue)+1})")
 
-    async with queue_lock:
-        task_queue.append({
-            "msg": message,
-            "media": reply.video or reply.document,
-            "format": fmt
-        })
-
-    await safe_reply(message, f"✅ Added to queue (Position: {len(task_queue)})")
-
-@app.on_message(filters.command("refresh"))
-async def refresh(_, message: Message):
-    if not await is_authorized(message):
-        return
-
-    global task_queue, is_processing
-    task_queue.clear()
-    is_processing = False
-
-    for f in os.listdir("."):
-        if f.startswith(("v_", "a_")) or f.endswith((".srt", ".vtt", ".ass")):
-            try:
-                os.remove(f)
-            except:
-                pass
-    gc.collect()
-    await safe_reply(message, "♻️ Queue & temp files cleaned!")
-
-# ================= PROCESS TASK (same) =================
+# ================= PROCESS TASK =================
 async def process_task(task):
     global is_processing
     msg = task["msg"]
     media = task["media"]
     fmt = task["format"]
-
-    status = await safe_reply(msg, "⏳ Starting...")
     uid = f"{msg.chat.id}_{msg.id}"
     v_path = f"v_{uid}.mp4"
     a_path = f"a_{uid}.mp3"
     out_file = f"sub_{uid}.{fmt}"
 
     try:
-        if status:
-            await status.edit("📥 Downloading media...")
+        status = await safe_reply(msg, "⏳ Downloading media...")
         await app.download_media(media.file_id, file_name=v_path)
 
         if status:
             await status.edit("🔊 Extracting audio...")
-        cmd = [
-            "ffmpeg", "-i", v_path,
-            "-vn", "-ar", "16000", "-ac", "1",
-            "-b:a", "32k", "-f", "mp3",
-            a_path, "-y"
-        ]
+        cmd = ["ffmpeg", "-i", v_path, "-vn", "-ar", "16000", "-ac", "1", "-b:a", "32k", "-f", "mp3", a_path, "-y"]
         proc = await asyncio.create_subprocess_exec(*cmd)
         await proc.wait()
-
-        if os.path.exists(v_path):
-            os.remove(v_path)
+        os.remove(v_path)
 
         if status:
             await status.edit("🤖 Loading AI Model...")
         mdl = await get_model()
-
         if status:
-            await status.edit("🤖 Transcribing... (tiny model on CPU)")
-
+            await status.edit(f"🤖 Transcribing ({fmt.upper()})...")
         loop = asyncio.get_event_loop()
         ok = await loop.run_in_executor(None, run_transcription, mdl, a_path, out_file, fmt)
+        os.remove(a_path)
 
         if not ok:
             raise Exception("No speech detected")
-
         dest = DEST_CHANNEL if DEST_CHANNEL != 0 else msg.chat.id
         if status:
-            await status.edit("📤 Uploading subtitle file...")
+            await status.edit("📤 Uploading subtitle...")
         await app.send_document(dest, out_file, caption=f"✅ {fmt.upper()} Subtitles Generated")
-
         if status:
             await status.delete()
-
+        os.remove(out_file)
     except Exception as e:
         print(f"Processing Error: {e}")
         if status:
             await status.edit(f"❌ Error: {str(e)[:80]}")
     finally:
-        for f in [v_path, a_path, out_file]:
-            if os.path.exists(f):
-                try:
-                    os.remove(f)
-                except:
-                    pass
-        gc.collect()
         is_processing = False
+        gc.collect()
 
-# ================= QUEUE WORKER (same) =================
+# ================= QUEUE WORKER =================
 async def worker():
     global is_processing
     while True:
-        if task_queue and not is_processing:
+        if users_data and not is_processing:
             is_processing = True
+            user_id, task = next(iter(users_data.items()))
             try:
-                task = task_queue.popleft()
-                await process_task(task)
+                await process_task({"msg": task["media"], "media": task["media"], "format": task["format"]})
+                users_data.pop(user_id, None)
             except Exception as e:
                 print(f"Worker Error: {e}")
                 is_processing = False
@@ -285,15 +256,10 @@ async def main():
         await app.send_message(OWNER_ID, "✅ SubGen Bot Started Successfully on Render!")
     except:
         pass
-
     asyncio.create_task(worker())
     print("🚀 BOT RUNNING")
-
     await idle()
 
 if __name__ == "__main__":
-    # Start dummy HTTP server in background thread for Render
-    http_thread = threading.Thread(target=run_http_server, daemon=True)
-    http_thread.start()
-
+    threading.Thread(target=run_http_server, daemon=True).start()
     asyncio.run(main())

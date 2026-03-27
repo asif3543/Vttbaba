@@ -2,13 +2,14 @@ import os
 import time
 import asyncio
 import gc
+import json
 import threading
 import subprocess
 from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from faster_whisper import WhisperModel
 from pyrogram import Client, filters, idle
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from huggingface_hub import login
 
 # ================= CONFIGURATION =================
@@ -19,17 +20,16 @@ HF_TOKEN = os.getenv("HF_TOKEN", "")
 DEST_CHANNEL = int(os.getenv("DEST_CHANNEL", "0"))
 
 OWNER_ID = 5344078567
-ALLOWED_USERS = [5351848105, 5344078567]
-ALLOWED_GROUPS = [-1003810374456]
-
+ALLOWED_USERS = [5351848105]
+ALLOWED_GROUPS = [-1003899919015]
 PORT = int(os.getenv("PORT", 10000))
 
-# ================= DUMMY HTTP SERVER =================
+# ================= DUMMY SERVER =================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"SubGen Bot is Live!")
+        self.wfile.write(b"SubGen Bot is Running!")
 
 def run_http_server():
     server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
@@ -38,20 +38,22 @@ def run_http_server():
 # ================= INIT =================
 app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# Global Variables (Encoder Style)
+users_waiting = {}  
 task_queue = deque()
+current_user = None
+current_task = None
 queue_lock = asyncio.Lock()
-# Yeh event ensure karega ki ek time pe ek hi task chale bina race condition ke
-processing_event = asyncio.Event() 
-processing_event.set() 
-
+in_queue = set()
 model = None
-model_lock = asyncio.Lock()
 
 # ================= UTILS =================
 def is_authorized(message: Message) -> bool:
     if not message.from_user: return False
     u_id = message.from_user.id
-    return u_id == OWNER_ID or u_id in ALLOWED_USERS or message.chat.id in ALLOWED_GROUPS
+    if u_id == OWNER_ID or u_id in ALLOWED_USERS or message.chat.id in ALLOWED_GROUPS:
+        return True
+    return False
 
 def format_timestamp(seconds: float, fmt: str):
     td = time.gmtime(seconds)
@@ -62,17 +64,16 @@ def format_timestamp(seconds: float, fmt: str):
 
 async def get_model():
     global model
-    async with model_lock:
-        if model is None:
-            if HF_TOKEN:
-                try: login(token=HF_TOKEN)
-                except: pass
-            model = WhisperModel("tiny", device="cpu", compute_type="int8")
-        return model
+    if model is None:
+        if HF_TOKEN:
+            try: login(token=HF_TOKEN)
+            except: pass
+        model = WhisperModel("tiny", device="cpu", compute_type="int8")
+    return model
 
 def run_transcription(model, audio_path, out_file, fmt):
     try:
-        # SYNC SAFE: No VAD filter to ensure perfect timing
+        # SYNC SAFE: vad_filter=False
         segments, _ = model.transcribe(audio_path, beam_size=5, vad_filter=False)
         with open(out_file, "w", encoding="utf-8") as f:
             if fmt == "vtt": f.write("WEBVTT\n\n")
@@ -88,44 +89,73 @@ def run_transcription(model, audio_path, out_file, fmt):
     except: return False
 
 # ================= HANDLERS =================
-@app.on_message(filters.command(["srt", "vtt"]))
-async def handle_request(client, message: Message):
+
+@app.on_message(filters.command("start"))
+async def start_cmd(_, message: Message):
+    await message.reply("<b>🔥 AI Subtitle Generator Online!</b>\n\nSend me a video or reply to one to start.")
+
+@app.on_message(filters.command("delete"))
+async def delete_handler(_, message: Message):
+    if not is_authorized(message): return
+    global task_queue, in_queue, current_user
+    task_queue.clear()
+    in_queue.clear()
+    current_user = None
+    await message.reply("🗑️ **Queue and tasks cleared!**")
+
+@app.on_message(filters.video | filters.document | filters.audio)
+async def media_handler(client, message: Message):
     if not is_authorized(message): return
     
-    target = message.reply_to_message
-    if not target or not (target.video or target.document or target.audio):
-        return await message.reply("❌ Reply to a video/audio file.")
+    media = message.video or message.document or message.audio
+    if message.document and not message.document.mime_type.startswith(("video/", "audio/")):
+        return # Ignore non-media docs
+    
+    user_id = message.from_user.id
+    users_waiting[user_id] = {"media": media}
+    
+    # Encoder Style Buttons
+    buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Generate SRT", callback_data="fmt_srt")],
+        [InlineKeyboardButton("Generate VTT", callback_data="fmt_vtt")]
+    ])
+    await message.reply("🎯 **Select Subtitle Format:**", reply_markup=buttons)
 
-    fmt = message.command[0].lower()
+@app.on_callback_query(filters.regex("^fmt_"))
+async def callback_handler(client, query):
+    user_id = query.from_user.id
+    if user_id not in users_waiting:
+        return await query.answer("❌ Error: Session expired. Send media again.", show_alert=True)
+    
+    fmt = query.data.split("_")[1]
+    media = users_waiting[user_id]["media"]
+    
     async with queue_lock:
-        task_queue.append({"msg": message, "media": target, "format": fmt})
+        task_queue.append({'user_id': user_id, 'message': query.message, 'media': media, 'format': fmt})
+        in_queue.add(user_id)
     
-    await message.reply(f"✅ Added to Queue. Position: {len(task_queue)}")
+    await query.message.edit(f"✅ **Added to Queue.** Format: {fmt.upper()}\nPosition: {len(task_queue)}")
+    del users_waiting[user_id]
 
-# ================= CORE PROCESSOR =================
-async def process_task(task):
-    msg = task["msg"]
-    media = task["media"]
-    fmt = task["format"]
-    
-    status = await msg.reply("⏳ **Processing started...**")
+# ================= CORE LOGIC =================
+
+async def process_task(client, user_id, original_msg, media, fmt):
+    status = await original_msg.reply("⚙️ **Starting Process...**")
     v_path = a_path = out_file = None
-    uid = f"{msg.from_user.id}_{int(time.time())}"
+    uid = f"{user_id}_{int(time.time())}"
 
     try:
-        # 1. Download
-        await status.edit("📥 **Downloading media...**")
-        v_path = await app.download_media(media)
+        await status.edit("📥 **Downloading Media...**")
+        v_path = await client.download_media(media)
         
-        # 2. Extract Audio
-        await status.edit("🔊 **Extracting Audio (FFmpeg)...**")
-        a_path = f"track_{uid}.mp3"
+        await status.edit("🔊 **Extracting Audio...**")
+        a_path = f"audio_{uid}.mp3"
+        # Fast extraction settings
         cmd = ["ffmpeg", "-i", v_path, "-vn", "-acodec", "libmp3lame", "-ar", "16000", "-ac", "1", a_path, "-y"]
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        await proc.wait()
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await process.wait()
 
-        # 3. Transcribe
-        await status.edit("🤖 **AI Transcribing (Linear Sync)...**")
+        await status.edit(f"🤖 **AI Transcribing ({fmt.upper()})...**")
         mdl = await get_model()
         out_file = f"Sub_{uid}.{fmt}"
         
@@ -133,43 +163,53 @@ async def process_task(task):
         success = await loop.run_in_executor(None, run_transcription, mdl, a_path, out_file, fmt)
 
         if success:
-            await status.edit("📤 **Uploading...**")
-            dest = DEST_CHANNEL if DEST_CHANNEL != 0 else msg.chat.id
-            await app.send_document(dest, out_file, caption=f"✅ {fmt.upper()} Generated")
+            await status.edit("📤 **Uploading Result...**")
+            dest = DEST_CHANNEL if DEST_CHANNEL != 0 else original_msg.chat.id
+            await client.send_document(
+                chat_id=dest,
+                document=out_file,
+                caption=f"✅ **{fmt.upper()} Generated**\n\n🆔 User: `{user_id}`"
+            )
             await status.delete()
         else:
-            await status.edit("❌ Transcription failed.")
-
+            await status.edit("❌ **Transcription Failed!**")
+            
     except Exception as e:
-        await status.edit(f"❌ Error: `{str(e)[:100]}`")
+        await status.edit(f"❌ **Error:** `{str(e)[:100]}`")
     finally:
         for f in [v_path, a_path, out_file]:
             if f and os.path.exists(f): os.remove(f)
         gc.collect()
 
 async def queue_worker():
+    global current_user, current_task
     while True:
-        await asyncio.sleep(1)
-        if task_queue and processing_event.is_set():
-            processing_event.clear() # Lock processing
-            async with queue_lock:
-                current_task = task_queue.popleft()
-            
-            try:
-                await process_task(current_task)
-            except Exception as e:
-                print(f"Worker Error: {e}")
-            finally:
-                processing_event.set() # Release lock
+        if not task_queue or current_user:
+            await asyncio.sleep(5)
+            continue
+        
+        async with queue_lock:
+            task = task_queue.popleft()
+            current_user = task['user_id']
+            if current_user in in_queue: in_queue.remove(current_user)
+        
+        try:
+            current_task = asyncio.create_task(
+                process_task(app, current_user, task['message'], task['media'], task['format'])
+            )
+            await current_task
+        except Exception as e:
+            print(f"Worker Error: {e}")
+        finally:
+            current_user = None
 
-# ================= MAIN =================
+# ================= START =================
 async def main():
     threading.Thread(target=run_http_server, daemon=True).start()
     await app.start()
+    print("🚀 Bot is Online!")
     asyncio.create_task(queue_worker())
-    print("🚀 Bot is Online with Processing Lock!")
     await idle()
 
 if __name__ == "__main__":
     asyncio.run(main())
-    

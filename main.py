@@ -1,170 +1,275 @@
 import os
+import time
 import asyncio
+import gc
+import re
+from collections import deque
+from faster_whisper import WhisperModel
 from pyrogram import Client, filters, idle
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
-from aiohttp import web
+from pyrogram.types import Message
+from huggingface_hub import login
 
-# ================= CONFIG =================
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-DEST_CHANNEL = int(os.getenv("DEST_CHANNEL", 0))
-PORT = int(os.environ.get("PORT", 10000))  # Render free-tier port
+================= CONFIG =================
 
-# ================= ACCESS CONTROL =================
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+DEST_CHANNEL = int(os.getenv("DEST_CHANNEL", "0"))
+
 OWNER_ID = 5344078567
-ALLOWED_USERS = [5351848105]
-ALLOWED_GROUPS = [-1003810374456]
+ALLOWED_USERS = [5344078567]
+ALLOWED_GROUPS = [-1003899919015]
 
-def is_authorized(message: Message) -> bool:
-    if not message.from_user: return False
-    u_id = message.from_user.id
-    if u_id == OWNER_ID or u_id in ALLOWED_USERS or message.chat.id in ALLOWED_GROUPS:
-        return True
+================= INIT =================
+
+app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+task_queue = deque()
+queue_lock = asyncio.Lock()
+is_processing = False
+
+model = None
+model_lock = asyncio.Lock()
+
+================= UTILS =================
+
+async def safe_reply(message: Message, text: str):
+try:
+return await message.reply_text(text)
+except Exception as e:
+print(f"Reply Error: {e}")
+return None
+
+async def is_authorized(message: Message) -> bool:
+if not message or not message.from_user:
+return False
+uid = message.from_user.id
+
+if uid == OWNER_ID or uid in ALLOWED_USERS or message.chat.id in ALLOWED_GROUPS:  
+    return True  
+
+await safe_reply(message, f"❌ Unauthorized ID: `{uid}`")  
+return False
+
+def format_timestamp(seconds: float, fmt: str):
+td = time.gmtime(seconds)
+ms = int((seconds % 1) * 1000)
+cs = int((seconds % 1) * 100)
+
+if fmt == "srt":  
+    return f"{time.strftime('%H:%M:%S', td)},{ms:03d}"  
+elif fmt == "vtt":  
+    return f"{time.strftime('%H:%M:%S', td)}.{ms:03d}"  
+else:  
+    ts = time.strftime('%H:%M:%S', td)  
+    return f"{ts[1:] if ts.startswith('0') else ts}.{cs:02d}"
+
+================= MODEL =================
+
+async def get_model():
+global model
+async with model_lock:
+if model is None:
+print("Loading Whisper Model...")
+
+if HF_TOKEN:  
+            try:  
+                login(token=HF_TOKEN)  
+            except Exception as e:  
+                print(f"HF Login Error: {e}")  
+
+        model = WhisperModel(  
+            "tiny",  
+            device="cpu",  
+            compute_type="int8",  
+            cpu_threads=1,  
+            num_workers=1  
+        )  
+        print("Model Loaded!")  
+
+    return model
+
+================= TRANSCRIBE =================
+
+def run_transcription(model, audio, out_file, fmt):
+try:
+segments, _ = model.transcribe(audio, beam_size=1)
+has_data = False
+
+with open(out_file, "w", encoding="utf-8") as f:  
+        if fmt == "vtt":  
+            f.write("WEBVTT\n\n")  
+        elif fmt == "ass":  
+            f.write("[Script Info]\nScriptType: v4.00+\n\n[Events]\nFormat: Layer, Start, End, Style, Text\n")  
+
+        for i, seg in enumerate(segments, 1):  
+            text = seg.text.strip()  
+            if not text:  
+                continue  
+
+            has_data = True  
+            start = format_timestamp(seg.start, fmt)  
+            end = format_timestamp(seg.end, fmt)  
+
+            if fmt == "srt":  
+                f.write(f"{i}\n{start} --> {end}\n{text}\n\n")  
+            elif fmt == "vtt":  
+                f.write(f"{start} --> {end}\n{text}\n\n")  
+            else:  
+                f.write(f"Dialogue: 0,{start},{end},Default,{text}\n")  
+
+    return has_data  
+
+except Exception as e:  
+    print(f"Transcription Error: {e}")  
     return False
 
-# ================= IN-MEMORY SETTINGS =================
-user_settings = {}     # {user_id: {"thumb": file_id, "format": "video"}}
-current_tasks = {}     # {user_id: asyncio.Task}
+================= COMMANDS =================
 
-# ================= BOT INIT =================
-app = Client("RenameBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-# ================= COMMAND HANDLERS =================
 @app.on_message(filters.command("start"))
-async def start(client, message: Message):
-    await message.reply_text(
-        "<b>🔥 Rename Bot Online!</b>\n\n"
-        "/tumb - Set Thumbnail\n"
-        "/form - Choose Format\n"
-        "/cancel - Cancel ongoing rename\n"
-        "/refresh - Reset your settings\n"
-        "Reply video/document with <code>/nn-li New Name</code> to rename and send to channel."
-    )
+async def start_cmd(_, message: Message):
+if await is_authorized(message):
+await safe_reply(message, "🔥 SubGen Bot Online!\nReply to video with /srt /vtt /ass")
 
-@app.on_message(filters.command("tumb"))
-async def set_tumb(client, message: Message):
-    if not is_authorized(message): return
-    await message.reply_text("📸 Send the image you want to set as thumbnail.")
+@app.on_message(filters.command(["srt", "vtt", "ass"]))
+async def handle_request(_, message: Message):
+if not await is_authorized(message):
+return
 
-@app.on_message(filters.photo)
-async def save_tumb(client, message: Message):
-    if not is_authorized(message): return
-    user_id = message.from_user.id
-    file_id = message.photo.file_id
-    if user_id not in user_settings:
-        user_settings[user_id] = {}
-    user_settings[user_id]["thumb"] = file_id
-    await message.reply_text("✅ Thumbnail saved!")
+reply = message.reply_to_message  
+if not reply or not (reply.video or reply.document):  
+    return await safe_reply(message, "❌ Reply to a video file")  
 
-@app.on_message(filters.command("form"))
-async def set_format(client, message: Message):
-    if not is_authorized(message): return
-    buttons = [
-        [
-            InlineKeyboardButton("Video (Media)", callback_data="set_vid"),
-            InlineKeyboardButton("Document", callback_data="set_doc")
-        ]
-    ]
-    await message.reply_text("Select format:", reply_markup=InlineKeyboardMarkup(buttons))
+fmt = message.command[0].lower()  
 
-@app.on_callback_query(filters.regex("set_"))
-async def update_format(client, query):
-    user_id = query.from_user.id
-    fmt = "video" if "vid" in query.data else "document"
-    if user_id not in user_settings:
-        user_settings[user_id] = {}
-    user_settings[user_id]["format"] = fmt
-    await query.answer()
-    await query.message.edit(f"✅ Format set to: {fmt.capitalize()}")
+async with queue_lock:  
+    task_queue.append({  
+        "msg": message,  
+        "media": reply.video or reply.document,  
+        "format": fmt  
+    })  
 
-@app.on_message(filters.command("cancel"))
-async def cancel_task(client, message: Message):
-    user_id = message.from_user.id
-    task = current_tasks.get(user_id)
-    if task and not task.done():
-        task.cancel()
-        await message.reply("❌ Your current rename request has been cancelled.")
-    else:
-        await message.reply("⚠️ No active rename request found.")
+await safe_reply(message, f"✅ Added to queue ({len(task_queue)})")
 
 @app.on_message(filters.command("refresh"))
-async def refresh_settings(client, message: Message):
-    user_id = message.from_user.id
-    if user_id in user_settings:
-        user_settings[user_id] = {}
-    await message.reply("🔄 Your settings have been reset. You can set new thumbnail and format now.")
+async def refresh(_, message: Message):
+if not await is_authorized(message):
+return
 
-@app.on_message(filters.command("nn-li") & filters.reply)
-async def rename_handler(client, message: Message):
-    if not is_authorized(message):
-        return await message.reply("❌ You are not authorized.")
+global task_queue, is_processing  
+task_queue.clear()  
+is_processing = False  
 
-    if len(message.command) < 2:
-        return await message.reply("❌ Usage: Reply with `/nn-li New Name`")
+for f in os.listdir():  
+    if f.startswith(("v_", "a_")) or f.endswith((".srt", ".vtt", ".ass")):  
+        try:  
+            os.remove(f)  
+        except:  
+            pass  
 
-    replied = message.reply_to_message
-    if not (replied.video or replied.document):
-        return await message.reply("❌ Reply to a Video/Document.")
+gc.collect()  
+await safe_reply(message, "♻️ Cleaned!")
 
-    new_name = message.text.split(None, 1)[1]
-    user_id = message.from_user.id
-    settings = user_settings.get(user_id, {})
-    thumb_id = settings.get("thumb")
-    fmt = settings.get("format", "video")
+================= PROCESS =================
 
-    status = await message.reply("⏳ Processing your request...")
-    file_id = replied.video.file_id if replied.video else replied.document.file_id
+async def process_task(task):
+msg = task["msg"]
+media = task["media"]
+fmt = task["format"]
 
-    async def send_file():
-        try:
-            if fmt == "video":
-                await client.send_video(
-                    chat_id=DEST_CHANNEL,
-                    video=file_id,
-                    caption=f"**{new_name}**",
-                    file_name=f"{new_name}.mp4",
-                    thumb=thumb_id,
-                    supports_streaming=True
-                )
-            else:
-                await client.send_document(
-                    chat_id=DEST_CHANNEL,
-                    document=file_id,
-                    caption=f"**{new_name}**",
-                    file_name=f"{new_name}.mkv",
-                    thumb=thumb_id
-                )
-            await status.edit(f"✅ Successfully sent '{new_name}' to channel.")
-        except asyncio.CancelledError:
-            await status.edit("❌ Rename request cancelled by user.")
-        except Exception as e:
-            await status.edit(f"❌ Error: {str(e)}")
-        finally:
-            current_tasks.pop(user_id, None)
+status = await safe_reply(msg, "⏳ Starting...")  
 
-    task = asyncio.create_task(send_file())
-    current_tasks[user_id] = task
+uid = f"{msg.chat.id}_{msg.id}"  
+v_path = f"v_{uid}.mp4"  
+a_path = f"a_{uid}.mp3"  
+out_file = f"sub_{uid}.{fmt}"  
 
-# ================= RENDER HTTP SERVER =================
-async def handle(request):
-    return web.Response(text="Rename Bot is Online!")
+try:  
+    # Download  
+    if status:  
+        await status.edit("📥 Downloading...")  
+    await app.download_media(media.file_id, file_name=v_path)  
 
-async def start_http_server():
-    server_app = web.Application()
-    server_app.router.add_get("/", handle)
-    runner = web.AppRunner(server_app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    print(f"🌐 HTTP server running on port {PORT}")
+    # FFmpeg async  
+    if status:  
+        await status.edit("🔊 Extracting audio...")  
 
-# ================= RUN BOT =================
-async def main_loop():
-    await start_http_server()  # Start Render HTTP server
-    await app.start()          # Start Pyrogram bot
-    print("✅ Rename Bot is Online and listening for messages!")
-    await idle()               # Keep bot running and listening
+    cmd = [  
+        "ffmpeg", "-i", v_path,  
+        "-vn", "-ar", "16000", "-ac", "1",  
+        "-ab", "32k", "-f", "mp3",  
+        a_path, "-y"  
+    ]  
 
-if __name__ == "__main__":
-    asyncio.run(main_loop())
+    proc = await asyncio.create_subprocess_exec(*cmd)  
+    await proc.wait()  
+
+    if os.path.exists(v_path):  
+        os.remove(v_path)  
+
+    # Load model  
+    if status:  
+        await status.edit("🤖 Loading AI...")  
+
+    mdl = await get_model()  
+
+    # Transcribe  
+    if status:  
+        await status.edit("🤖 Transcribing...")  
+
+    loop = asyncio.get_event_loop()  
+    ok = await loop.run_in_executor(None, run_transcription, mdl, a_path, out_file, fmt)  
+
+    if not ok:  
+        raise Exception("No speech detected")  
+
+    # Upload  
+    dest = DEST_CHANNEL if DEST_CHANNEL != 0 else msg.chat.id  
+    await app.send_document(dest, out_file, caption=f"✅ {fmt.upper()} Generated")  
+
+    if status:  
+        await status.delete()  
+
+except Exception as e:  
+    print(f"Error: {e}")  
+    if status:  
+        await status.edit(f"❌ {str(e)[:50]}")  
+
+finally:  
+    for f in [v_path, a_path, out_file]:  
+        if os.path.exists(f):  
+            os.remove(f)  
+    gc.collect()
+
+================= QUEUE =================
+
+async def worker():
+global is_processing
+while True:
+if task_queue and not is_processing:
+is_processing = True
+try:
+await process_task(task_queue.popleft())
+except Exception as e:
+print(f"Worker Error: {e}")
+is_processing = False
+await asyncio.sleep(2)
+
+================= MAIN =================
+
+async def main():
+await app.start()
+
+try:  
+    await app.send_message(OWNER_ID, "✅ Bot Started Successfully!")  
+except:  
+    pass  
+
+asyncio.create_task(worker())  
+
+print("🚀 BOT RUNNING")  
+await idle()
+
+if name == "main":
+asyncio.run(main())

@@ -9,7 +9,7 @@ from pyrogram import Client, filters, idle
 from pyrogram.types import Message
 from huggingface_hub import login
 
-================= CONFIG =================
+# ================= CONFIG =================
 
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
@@ -21,7 +21,7 @@ OWNER_ID = 5344078567
 ALLOWED_USERS = [5344078567]
 ALLOWED_GROUPS = [-1003899919015]
 
-================= INIT =================
+# ================= INIT =================
 
 app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -32,7 +32,7 @@ is_processing = False
 model = None
 model_lock = asyncio.Lock()
 
-================= UTILS =================
+# ================= UTILS =================
 
 async def safe_reply(message: Message, text: str):
 try:
@@ -65,7 +65,7 @@ else:
     ts = time.strftime('%H:%M:%S', td)  
     return f"{ts[1:] if ts.startswith('0') else ts}.{cs:02d}"
 
-================= MODEL =================
+# ================= MODEL =================
 
 async def get_model():
 global model
@@ -90,7 +90,7 @@ if HF_TOKEN:
 
     return model
 
-================= TRANSCRIBE =================
+# ================= TRANSCRIBE =================
 
 def run_transcription(model, audio, out_file, fmt):
 try:
@@ -125,7 +125,7 @@ except Exception as e:
     print(f"Transcription Error: {e}")  
     return False
 
-================= COMMANDS =================
+# ================= COMMANDS =================
 
 @app.on_message(filters.command("start"))
 async def start_cmd(_, message: Message):
@@ -171,7 +171,7 @@ for f in os.listdir():
 gc.collect()  
 await safe_reply(message, "♻️ Cleaned!")
 
-================= PROCESS =================
+# ================= PROCESS =================
 
 async def process_task(task):
 msg = task["msg"]
@@ -242,7 +242,7 @@ finally:
             os.remove(f)  
     gc.collect()
 
-================= QUEUE =================
+# ================= QUEUE =================
 
 async def worker():
 global is_processing
@@ -256,7 +256,7 @@ print(f"Worker Error: {e}")
 is_processing = False
 await asyncio.sleep(2)
 
-================= MAIN =================
+# ================= MAIN =================
 
 async def main():
 await app.start()

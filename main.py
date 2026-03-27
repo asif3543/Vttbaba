@@ -3,6 +3,8 @@ import time
 import asyncio
 import gc
 from collections import deque
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from faster_whisper import WhisperModel
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
@@ -19,6 +21,24 @@ OWNER_ID = 5344078567
 ALLOWED_USERS = [5344078567]
 ALLOWED_GROUPS = [-1003899919015]
 
+PORT = int(os.getenv("PORT", 10000))   # Render ke liye important
+
+# ================= DUMMY HTTP SERVER FOR RENDER =================
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"SubGen Bot is running on Render!\n")
+
+def run_http_server():
+    try:
+        server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+        print(f"✅ Dummy HTTP server started on port {PORT} for Render")
+        server.serve_forever()
+    except Exception as e:
+        print(f"HTTP Server Error: {e}")
+
 # ================= INIT =================
 app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -29,7 +49,7 @@ is_processing = False
 model = None
 model_lock = asyncio.Lock()
 
-# ================= UTILS =================
+# ================= UTILS (same as before) =================
 async def safe_reply(message: Message, text: str):
     try:
         return await message.reply_text(text)
@@ -59,7 +79,7 @@ def format_timestamp(seconds: float, fmt: str):
         ts = time.strftime('%H:%M:%S', td)
         return f"{ts[1:] if ts.startswith('0') else ts}.{cs:02d}"
 
-# ================= MODEL =================
+# ================= MODEL (same) =================
 async def get_model():
     global model
     async with model_lock:
@@ -77,7 +97,7 @@ async def get_model():
                     "tiny",
                     device="cpu",
                     compute_type="int8",
-                    cpu_threads=max(2, os.cpu_count() or 4),   # better than 1
+                    cpu_threads=max(2, os.cpu_count() or 4),
                     num_workers=1,
                     download_root="./model_cache"
                 )
@@ -95,13 +115,13 @@ async def get_model():
                 print("✅ Model Loaded with float32 fallback!")
         return model
 
-# ================= TRANSCRIBE =================
+# ================= TRANSCRIBE (same) =================
 def run_transcription(model, audio_path, out_file, fmt):
     try:
         segments, info = model.transcribe(
             audio_path,
-            beam_size=5,           # better quality than 1
-            vad_filter=True,       # removes silence better
+            beam_size=5,
+            vad_filter=True,
             word_timestamps=False
         )
         print(f"Detected language: {info.language} (prob: {info.language_probability:.2f})")
@@ -133,7 +153,7 @@ def run_transcription(model, audio_path, out_file, fmt):
         print(f"Transcription Error: {e}")
         return False
 
-# ================= COMMANDS =================
+# ================= COMMANDS (same) =================
 @app.on_message(filters.command("start"))
 async def start_cmd(_, message: Message):
     if await is_authorized(message):
@@ -177,7 +197,7 @@ async def refresh(_, message: Message):
     gc.collect()
     await safe_reply(message, "♻️ Queue & temp files cleaned!")
 
-# ================= PROCESS TASK =================
+# ================= PROCESS TASK (same) =================
 async def process_task(task):
     global is_processing
     msg = task["msg"]
@@ -244,7 +264,7 @@ async def process_task(task):
         gc.collect()
         is_processing = False
 
-# ================= QUEUE WORKER =================
+# ================= QUEUE WORKER (same) =================
 async def worker():
     global is_processing
     while True:
@@ -268,7 +288,12 @@ async def main():
 
     asyncio.create_task(worker())
     print("🚀 BOT RUNNING")
+
     await idle()
 
 if __name__ == "__main__":
+    # Start dummy HTTP server in background thread for Render
+    http_thread = threading.Thread(target=run_http_server, daemon=True)
+    http_thread.start()
+
     asyncio.run(main())

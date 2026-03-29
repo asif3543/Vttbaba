@@ -12,41 +12,26 @@ from faster_whisper import WhisperModel
 
 # ================= CONFIG =================
 
-API_ID = int(os.getenv("API_ID", "0"))   # 👈 Render se lega
-API_HASH = os.getenv("API_HASH", "")     # 👈 Render se lega
-
-BOT_TOKEN = "8397073883:AAEUc_qW_dzmxBzrHZehoczWl3MFY0Z4WNM"  # 🔥 FIXED TOKEN (yaha daal de apna)
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 PORT = int(os.getenv("PORT", "10000"))
 
-# ================= SAFETY CHECK =================
+# ================= SERVER (RENDER FIX) =================
 
-if API_ID == 0 or API_HASH == "":
-    raise ValueError("❌ API_ID / API_HASH missing (Render me daal)")
-
-if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN missing")
-
-# ================= SERVER =================
-
-class HealthHandler(BaseHTTPRequestHandler):
+class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Bot Running")
 
 def run_server():
-    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
-    server.serve_forever()
+    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 # ================= BOT =================
 
-app = Client(
-    "SubGenBot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
+app = Client("SubtitleBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 task_queue = deque()
 queue_lock = asyncio.Lock()
@@ -72,16 +57,17 @@ def format_time(sec, fmt):
         return f"{h:02}:{m:02}:{s:02},{ms:03}"
     return f"{h:02}:{m:02}:{s:02}.{ms:03}"
 
-# ================= TRANSCRIBE =================
+# ================= SUBTITLE GENERATOR =================
 
-def generate_sub(model, audio, output, fmt):
-    segments, _ = model.transcribe(audio, vad_filter=False)
+def generate_subtitle(segments, output, fmt):
 
     with open(output, "w", encoding="utf-8") as f:
+
         if fmt == "vtt":
             f.write("WEBVTT\n\n")
 
         for i, seg in enumerate(segments, 1):
+
             text = seg.text.strip()
             if not text:
                 continue
@@ -98,13 +84,20 @@ def generate_sub(model, audio, output, fmt):
 
 @app.on_message(filters.command("start"))
 async def start_cmd(client, message):
-    await message.reply("🔥 Bot Online!\n\nReply video with /srt or /vtt")
+    await message.reply(
+        "🔥 Subtitle Bot Online!\n\n"
+        "Step 1: Send video\n"
+        "Step 2: Reply with /srt or /vtt"
+    )
 
 @app.on_message(filters.command(["srt", "vtt"]))
 async def add_queue(client, message):
 
     if not message.reply_to_message:
         return await message.reply("⚠️ Reply to a video")
+
+    if not (message.reply_to_message.video or message.reply_to_message.document):
+        return await message.reply("⚠️ Only video supported")
 
     fmt = message.command[0]
 
@@ -119,6 +112,7 @@ async def add_queue(client, message):
 # ================= WORKER =================
 
 async def worker():
+
     while True:
 
         if not task_queue:
@@ -138,10 +132,12 @@ async def worker():
         sub = f"sub_{msg.id}.{fmt}"
 
         try:
+            # DOWNLOAD
+            await status.edit("📥 Downloading video...")
             await app.download_media(msg.reply_to_message, file_name=video)
 
-            await status.edit("🎵 Extracting...")
-
+            # EXTRACT AUDIO
+            await status.edit("🎵 Extracting audio...")
             proc = await asyncio.create_subprocess_shell(
                 f"ffmpeg -i {video} -vn -ar 16000 -ac 1 {audio} -y",
                 stdout=asyncio.subprocess.DEVNULL,
@@ -149,21 +145,26 @@ async def worker():
             )
             await proc.wait()
 
+            # TRANSCRIBE
             await status.edit("🤖 Transcribing...")
-
             mdl = load_model()
-            await asyncio.to_thread(generate_sub, mdl, audio, sub, fmt)
+            segments, _ = await asyncio.to_thread(mdl.transcribe, audio)
 
+            # GENERATE SUBTITLE
+            await status.edit("📝 Generating subtitle...")
+            await asyncio.to_thread(generate_subtitle, segments, sub, fmt)
+
+            # UPLOAD
             await status.edit("⬆️ Uploading...")
-
             await msg.reply_document(sub)
 
             await status.delete()
 
         except Exception as e:
-            await status.edit(f"❌ Error: {str(e)[:50]}")
+            await status.edit(f"❌ Error: {str(e)[:80]}")
 
         finally:
+            # CLEANUP
             for f in [video, audio, sub]:
                 if os.path.exists(f):
                     os.remove(f)

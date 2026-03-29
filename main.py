@@ -1,220 +1,202 @@
-
-
 import os
 import re
 import gc
 import time
-import json
 import asyncio
 import threading
-import subprocess
 from collections import deque
-from pyrogram import Client, filters, idle
-from pyrogram.types import Message
-from pyrogram.enums import ChatType
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from faster_whisper import WhisperModel
+
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from faster_whisper import WhisperModel
 from huggingface_hub import login
 
-# ================= CONFIGURATION =================
+# ================= CONFIG =================
+
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 HF_TOKEN = os.getenv("HF_TOKEN", "")
-DEST_CHANNEL = int(os.getenv("DEST_CHANNEL", "0"))
+PORT = int(os.getenv("PORT", "10000"))
 
-OWNER_ID = 5344078567
+OWNER_ID = int(os.getenv("OWNER_ID", "5344078567"))
 ALLOWED_USERS = [5351848105]
 ALLOWED_GROUPS = [-1003899919015]
-PORT = int(os.getenv("PORT", 10000))
 
-# ================= DUMMY SERVER =================
+# 🔴 FIX: BOT TOKEN CHECK (MOST IMPORTANT)
+if not BOT_TOKEN or BOT_TOKEN == "":
+    raise ValueError("❌ BOT_TOKEN missing in environment variables")
+
+# ================= SERVER =================
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"SubGen Bot is Running!")
+        self.wfile.write(b"Bot Running")
 
-def run_http_server():
+def run_server():
     server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
     server.serve_forever()
 
-# ================= INIT =================
-app = Client("SubGenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# ================= BOT =================
 
-# Global Variables (Encoder Style)
-users_waiting = {}  
+app = Client(
+    "SubGenBot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
+
 task_queue = deque()
-current_user = None
-current_task = None
 queue_lock = asyncio.Lock()
-in_queue = set()
 model = None
 
-# ================= UTILS =================
-def is_authorized(message: Message) -> bool:
-    if not message.from_user: return False
-    u_id = message.from_user.id
-    if u_id == OWNER_ID or u_id in ALLOWED_USERS or message.chat.id in ALLOWED_GROUPS:
-        return True
-    return False
+# ================= AUTH =================
 
-def format_timestamp(seconds: float, fmt: str):
-    td = time.gmtime(seconds)
-    ms = int((seconds % 1) * 1000)
-    if fmt == "srt":
-        return f"{time.strftime('%H:%M:%S', td)},{ms:03d}"
-    return f"{time.strftime('%H:%M:%S', td)}.{ms:03d}"
+def is_authorized(message: Message):
+    if not message.from_user:
+        return False
+    uid = message.from_user.id
+    return uid == OWNER_ID or uid in ALLOWED_USERS or message.chat.id in ALLOWED_GROUPS
 
-async def get_model():
+# ================= MODEL =================
+
+def load_model():
     global model
     if model is None:
         if HF_TOKEN:
-            try: login(token=HF_TOKEN)
-            except: pass
+            try:
+                login(token=HF_TOKEN)
+            except:
+                pass
         model = WhisperModel("tiny", device="cpu", compute_type="int8")
     return model
 
-def run_transcription(model, audio_path, out_file, fmt):
-    try:
-        # SYNC SAFE: vad_filter=False
-        segments, _ = model.transcribe(audio_path, beam_size=5, vad_filter=False)
-        with open(out_file, "w", encoding="utf-8") as f:
-            if fmt == "vtt": f.write("WEBVTT\n\n")
-            for i, seg in enumerate(segments, 1):
-                start, end = format_timestamp(seg.start, fmt), format_timestamp(seg.end, fmt)
-                text = seg.text.strip()
-                if not text: continue
-                if fmt == "srt":
-                    f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
-                else:
-                    f.write(f"{start} --> {end}\n{text}\n\n")
-        return os.path.exists(out_file) and os.path.getsize(out_file) > 0
-    except: return False
+# ================= TIME =================
+
+def format_time(sec, fmt):
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    s = int(sec % 60)
+    ms = int((sec - int(sec)) * 1000)
+
+    if fmt == "srt":
+        return f"{h:02}:{m:02}:{s:02},{ms:03}"
+    return f"{h:02}:{m:02}:{s:02}.{ms:03}"
+
+# ================= TRANSCRIBE =================
+
+def generate_sub(model, audio, output, fmt):
+    segments, _ = model.transcribe(audio, vad_filter=False)
+
+    with open(output, "w", encoding="utf-8") as f:
+        if fmt == "vtt":
+            f.write("WEBVTT\n\n")
+
+        for i, seg in enumerate(segments, 1):
+            text = seg.text.strip()
+            if not text:
+                continue
+
+            start = format_time(seg.start, fmt)
+            end = format_time(seg.end, fmt)
+
+            if fmt == "srt":
+                f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
+            else:
+                f.write(f"{start} --> {end}\n{text}\n\n")
 
 # ================= HANDLERS =================
 
 @app.on_message(filters.command("start"))
-async def start_cmd(_, message: Message):
-    await message.reply("<b>🔥 AI Subtitle Generator Online!</b>\n\nSend me a video or reply to one to start.")
+async def start_cmd(client, message):
+    await message.reply("🔥 Bot Online!\n\nReply video with /srt or /vtt")
 
-@app.on_message(filters.command("delete"))
-async def delete_handler(_, message: Message):
-    if not is_authorized(message): return
-    global task_queue, in_queue, current_user
-    task_queue.clear()
-    in_queue.clear()
-    current_user = None
-    await message.reply("🗑️ **Queue and tasks cleared!**")
+@app.on_message(filters.command(["srt", "vtt"]))
+async def add_queue(client, message):
 
-@app.on_message(filters.video | filters.document | filters.audio)
-async def media_handler(client, message: Message):
-    if not is_authorized(message): return
-    
-    media = message.video or message.document or message.audio
-    if message.document and not message.document.mime_type.startswith(("video/", "audio/")):
-        return # Ignore non-media docs
-    
-    user_id = message.from_user.id
-    users_waiting[user_id] = {"media": media}
-    
-    # Encoder Style Buttons
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Generate SRT", callback_data="fmt_srt")],
-        [InlineKeyboardButton("Generate VTT", callback_data="fmt_vtt")]
-    ])
-    await message.reply("🎯 **Select Subtitle Format:**", reply_markup=buttons)
+    if not is_authorized(message):
+        return await message.reply("❌ Not allowed")
 
-@app.on_callback_query(filters.regex("^fmt_"))
-async def callback_handler(client, query):
-    user_id = query.from_user.id
-    if user_id not in users_waiting:
-        return await query.answer("❌ Error: Session expired. Send media again.", show_alert=True)
-    
-    fmt = query.data.split("_")[1]
-    media = users_waiting[user_id]["media"]
-    
+    if not message.reply_to_message:
+        return await message.reply("⚠️ Reply to a video")
+
+    fmt = message.command[0]
+
     async with queue_lock:
-        task_queue.append({'user_id': user_id, 'message': query.message, 'media': media, 'format': fmt})
-        in_queue.add(user_id)
-    
-    await query.message.edit(f"✅ **Added to Queue.** Format: {fmt.upper()}\nPosition: {len(task_queue)}")
-    del users_waiting[user_id]
+        task_queue.append({
+            "msg": message,
+            "fmt": fmt
+        })
 
-# ================= CORE LOGIC =================
+    await message.reply(f"✅ Added to queue ({len(task_queue)})")
 
-async def process_task(client, user_id, original_msg, media, fmt):
-    status = await original_msg.reply("⚙️ **Starting Process...**")
-    v_path = a_path = out_file = None
-    uid = f"{user_id}_{int(time.time())}"
+# ================= WORKER =================
 
-    try:
-        await status.edit("📥 **Downloading Media...**")
-        v_path = await client.download_media(media)
-        
-        await status.edit("🔊 **Extracting Audio...**")
-        a_path = f"audio_{uid}.mp3"
-        # Fast extraction settings
-        cmd = ["ffmpeg", "-i", v_path, "-vn", "-acodec", "libmp3lame", "-ar", "16000", "-ac", "1", a_path, "-y"]
-        process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        await process.wait()
+async def worker():
 
-        await status.edit(f"🤖 **AI Transcribing ({fmt.upper()})...**")
-        mdl = await get_model()
-        out_file = f"Sub_{uid}.{fmt}"
-        
-        loop = asyncio.get_running_loop()
-        success = await loop.run_in_executor(None, run_transcription, mdl, a_path, out_file, fmt)
-
-        if success:
-            await status.edit("📤 **Uploading Result...**")
-            dest = DEST_CHANNEL if DEST_CHANNEL != 0 else original_msg.chat.id
-            await client.send_document(
-                chat_id=dest,
-                document=out_file,
-                caption=f"✅ **{fmt.upper()} Generated**\n\n🆔 User: `{user_id}`"
-            )
-            await status.delete()
-        else:
-            await status.edit("❌ **Transcription Failed!**")
-            
-    except Exception as e:
-        await status.edit(f"❌ **Error:** `{str(e)[:100]}`")
-    finally:
-        for f in [v_path, a_path, out_file]:
-            if f and os.path.exists(f): os.remove(f)
-        gc.collect()
-
-async def queue_worker():
-    global current_user, current_task
     while True:
-        if not task_queue or current_user:
-            await asyncio.sleep(5)
+
+        if not task_queue:
+            await asyncio.sleep(2)
             continue
-        
+
         async with queue_lock:
             task = task_queue.popleft()
-            current_user = task['user_id']
-            if current_user in in_queue: in_queue.remove(current_user)
-        
-        try:
-            current_task = asyncio.create_task(
-                process_task(app, current_user, task['message'], task['media'], task['format'])
-            )
-            await current_task
-        except Exception as e:
-            print(f"Worker Error: {e}")
-        finally:
-            current_user = None
 
-# ================= START =================
+        msg = task["msg"]
+        fmt = task["fmt"]
+
+        status = await msg.reply("⏳ Processing...")
+
+        video = f"v_{msg.id}.mp4"
+        audio = f"a_{msg.id}.mp3"
+        sub = f"sub_{msg.id}.{fmt}"
+
+        try:
+            await app.download_media(msg.reply_to_message, file_name=video)
+
+            await status.edit("🎵 Extracting...")
+
+            proc = await asyncio.create_subprocess_shell(
+                f"ffmpeg -i {video} -vn -ar 16000 -ac 1 {audio} -y",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.wait()
+
+            await status.edit("🤖 Transcribing...")
+
+            mdl = load_model()
+            await asyncio.to_thread(generate_sub, mdl, audio, sub, fmt)
+
+            await status.edit("⬆️ Uploading...")
+
+            await msg.reply_document(sub)
+
+            await status.delete()
+
+        except Exception as e:
+            await status.edit(f"❌ Error: {str(e)[:50]}")
+
+        finally:
+            for f in [video, audio, sub]:
+                if os.path.exists(f):
+                    os.remove(f)
+            gc.collect()
+
+# ================= MAIN =================
+
 async def main():
-    threading.Thread(target=run_http_server, daemon=True).start()
+    threading.Thread(target=run_server, daemon=True).start()
+
     await app.start()
-    print("🚀 Bot is Online!")
-    asyncio.create_task(queue_worker())
+    print("✅ BOT STARTED")
+
+    asyncio.create_task(worker())
+
     await idle()
 
 if __name__ == "__main__":

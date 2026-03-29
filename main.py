@@ -1,5 +1,4 @@
 import os
-import re
 import gc
 import time
 import asyncio
@@ -8,25 +7,25 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from pyrogram import Client, filters, idle
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import Message
 from faster_whisper import WhisperModel
-from huggingface_hub import login
 
 # ================= CONFIG =================
 
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH", "")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-HF_TOKEN = os.getenv("HF_TOKEN", "")
+API_ID = int(os.getenv("API_ID", "0"))   # 👈 Render se lega
+API_HASH = os.getenv("API_HASH", "")     # 👈 Render se lega
+
+BOT_TOKEN = "8397073883:AAEUc_qW_dzmxBzrHZehoczWl3MFY0Z4WNM"  # 🔥 FIXED TOKEN (yaha daal de apna)
+
 PORT = int(os.getenv("PORT", "10000"))
 
-OWNER_ID = int(os.getenv("OWNER_ID", "5344078567"))
-ALLOWED_USERS = [5351848105]
-ALLOWED_GROUPS = [-1003899919015]
+# ================= SAFETY CHECK =================
 
-# 🔴 FIX: BOT TOKEN CHECK (MOST IMPORTANT)
-if not BOT_TOKEN or BOT_TOKEN == "":
-    raise ValueError("❌ BOT_TOKEN missing in environment variables")
+if API_ID == 0 or API_HASH == "":
+    raise ValueError("❌ API_ID / API_HASH missing (Render me daal)")
+
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN missing")
 
 # ================= SERVER =================
 
@@ -53,24 +52,11 @@ task_queue = deque()
 queue_lock = asyncio.Lock()
 model = None
 
-# ================= AUTH =================
-
-def is_authorized(message: Message):
-    if not message.from_user:
-        return False
-    uid = message.from_user.id
-    return uid == OWNER_ID or uid in ALLOWED_USERS or message.chat.id in ALLOWED_GROUPS
-
 # ================= MODEL =================
 
 def load_model():
     global model
     if model is None:
-        if HF_TOKEN:
-            try:
-                login(token=HF_TOKEN)
-            except:
-                pass
         model = WhisperModel("tiny", device="cpu", compute_type="int8")
     return model
 
@@ -108,7 +94,7 @@ def generate_sub(model, audio, output, fmt):
             else:
                 f.write(f"{start} --> {end}\n{text}\n\n")
 
-# ================= HANDLERS =================
+# ================= COMMANDS =================
 
 @app.on_message(filters.command("start"))
 async def start_cmd(client, message):
@@ -116,9 +102,6 @@ async def start_cmd(client, message):
 
 @app.on_message(filters.command(["srt", "vtt"]))
 async def add_queue(client, message):
-
-    if not is_authorized(message):
-        return await message.reply("❌ Not allowed")
 
     if not message.reply_to_message:
         return await message.reply("⚠️ Reply to a video")
@@ -136,7 +119,6 @@ async def add_queue(client, message):
 # ================= WORKER =================
 
 async def worker():
-
     while True:
 
         if not task_queue:

@@ -2,20 +2,23 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 import config
 
-@app.on_message(filters.command("Setting") & (filters.user(config.ADMINS) | filters.chat(config.ALLOWED_GROUP)))
-async def settings_cmd(client: Client, message: Message):
+@Client.on_message(~filters.command("start") & filters.private & ~filters.user(config.ADMINS))
+async def any_text_user(client: Client, message: Message):
+    await message.reply("I am an anime post bot. Only admins can use commands.")
+
+@Client.on_message(filters.command("Setting") & filters.user(config.ADMINS))
+async def cmd_settings(client: Client, message: Message):
     text = """
-⚙️ **Bot Commands & Settings** ⚙️
+⚙️ **All Commands List**
+/post - Create new post
+/add shortner account - Connect GP Link etc.
+/remove shortner account - Remove Shortener
+/add premium - Add premium member (28 Days)
+/remove premium - Ban premium member
+/show premium list - View all premium users
+/Force sub - Set Force Join Channel
+/send | /send more channel - Send to channels
 
-/post - Naya episode/batch post karne ke liye
-/add shortner account - Naya shortner add karne ke liye
-/remove shortner account - Shortner hatane ke liye
-/add premium - Bina shortner direct link dene ke liye (28 days)
-/remove premium - Premium hatane ke liye
-/show premium list - Premium users dekhne ke liye
-/Force sub - Force sub channel add karne ke liye
-/send & /send more channel - Posts ko target channels me bhejne ke liye
-
-*Bot is securely running on Render with Supabase DB!*
+*Everything configured perfectly for Render!*
     """
     await message.reply(text)

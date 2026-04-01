@@ -4,6 +4,7 @@ import json
 import asyncio
 import threading
 import tempfile
+import re
 from collections import deque
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -15,7 +16,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
 DEST_CHANNEL = "@Sub_and_hardsub"
 PORT = 10000
 
@@ -28,25 +28,38 @@ app = Client("EncoderBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 users_data = {}
 task_queue = deque()
 in_queue = set()
-current_encoding = {}
-
+processing_lock = asyncio.Lock()
+main_loop = None
 edit = "Maintanence by: @Sub_and_hardsub"
+
+current_encoding = {}
 
 # ================= UTILS =================
 
-def is_authorized(message: Message):
-    if not message.from_user:
-        return False
-    if message.text and message.text.lower().startswith("/start"):
+def is_authorized(message: Message) -> bool:
+    if not message.from_user: return False
+    u_id = message.from_user.id    
+    if message.text and message.text.lower().startswith("/start"): return True    
+    if u_id == OWNER_ID or u_id in ALLOWED_USERS or message.chat.id in ALLOWED_GROUPS:
         return True
-    return (
-        message.from_user.id == OWNER_ID
-        or message.from_user.id in ALLOWED_USERS
-        or message.chat.id in ALLOWED_GROUPS
-    )
+    return False
 
-def is_owner(message: Message):
+def is_owner(message: Message) -> bool:
     return message.from_user and message.from_user.id == OWNER_ID
+
+async def get_duration(file):
+    try:
+        cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", file]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE)
+        stdout, _ = await proc.communicate()
+        data = json.loads(stdout.decode())
+        return float(data.get("format", {}).get("duration", 0))
+    except:
+        return 0
+
+def format_progress_bar(percent, width=10):
+    filled = int(percent * width / 100)
+    return "█" * filled + "░" * (width - filled)
 
 async def safe_edit(message: Message, text: str):
     try:
@@ -54,31 +67,41 @@ async def safe_edit(message: Message, text: str):
     except:
         pass
 
-def progress_bar(p):
-    filled = int(p / 10)
-    return "█" * filled + "░" * (10 - filled)
-
 # ================= DOWNLOAD =================
 
-async def download_file(client, file_id):
-    path = await client.download_media(file_id)
-    if not path or not os.path.exists(path):
-        raise Exception("Download failed")
-    return path
+async def download_with_verification(client, file_id, status_msg, phase="Downloading"):
+    temp_dir = tempfile.gettempdir()
+    base_name = f"temp_{int(time.time())}_{file_id}"
+    
+    for attempt in range(5):
+        temp_file = os.path.join(temp_dir, f"{base_name}_{attempt}")
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+                
+            path = await client.download_media(file_id, file_name=temp_file)
+            if path and os.path.exists(path) and os.path.getsize(path) > 0:
+                return path
+        except:
+            await asyncio.sleep(3)
+    raise Exception("Download failed")
 
 # ================= ENCODER =================
 
-async def encode(video, sub, out, duration, msg, uid):
+async def encode_with_progress(video_path, subtitle_path, output_path, total_duration, status_msg, user_id):
+    escaped_sub = subtitle_path.replace("\\", "\\\\").replace("'", "'\\\\''")
+
     cmd = [
-        "ffmpeg", "-i", video,
-        "-vf", f"subtitles='{sub}'",
+        "ffmpeg", "-i", video_path,
+        "-vf", f"subtitles=filename='{escaped_sub}'",
         "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "26",
-        "-threads", "2",
+        "-preset", "superfast",   # FIX
+        "-crf", "28",             # FIX
+        "-threads", "1",          # FIX
+        "-max_muxing_queue_size", "1024",
         "-c:a", "copy",
         "-progress", "pipe:1",
-        "-y", out
+        "-y", output_path
     ]
 
     process = await asyncio.create_subprocess_exec(
@@ -87,84 +110,74 @@ async def encode(video, sub, out, duration, msg, uid):
         stderr=asyncio.subprocess.PIPE
     )
 
-    current_encoding[uid] = process
-    last = 0
+    current_encoding[user_id] = process
+    last_update = 0
+    progress_data = {}
 
     while True:
         line = await process.stdout.readline()
         if not line:
             break
 
-        if b"out_time_ms" in line:
-            try:
-                ms = int(line.decode().split("=")[1])
-                sec = ms / 1_000_000
-                percent = (sec / duration) * 100 if duration else 0
+        line = line.decode().strip()
+        if "=" in line:
+            key, val = line.split("=", 1)
+            progress_data[key] = val
 
-                if time.time() - last > 8:
-                    await safe_edit(msg, f"🔥 Encoding\n{progress_bar(percent)} {percent:.1f}%")
-                    last = time.time()
+        if key == "out_time_ms":
+            try:
+                ms = int(progress_data.get("out_time_ms", 0))
+                sec = ms / 1_000_000
+                percent = (sec / total_duration) * 100 if total_duration else 0
+
+                if time.time() - last_update > 10:  # FIX
+                    bar = format_progress_bar(percent)
+                    await safe_edit(status_msg, f"🔥 Encoding...\n`{bar}` {percent:.1f}%")
+                    last_update = time.time()
             except:
                 pass
 
-    await process.wait()
-    current_encoding.pop(uid, None)
+    try:
+        await asyncio.wait_for(process.wait(), timeout=900)  # FIX
+    except:
+        process.kill()
+        raise Exception("Encoding timeout")
 
-    if not os.path.exists(out):
+    current_encoding.pop(user_id, None)
+
+    if not os.path.exists(output_path):
         raise Exception("Encoding failed")
 
-# ================= COMMANDS =================
+    return True
+
+# ================= HANDLERS =================
 
 @app.on_message(filters.command("start"))
-async def start(client, m):
-    await m.reply("🔥 Bot Online!\nUse /hsub")
-
-@app.on_message(filters.command("delete"))
-async def delete(client, m):
-    if not is_owner(m):
-        return await m.reply("❌ Owner only")
-    task_queue.clear()
-    users_data.clear()
-    await m.reply("🗑 Cleared")
-
-@app.on_message(filters.command("cancel"))
-async def cancel(client, m):
-    uid = m.from_user.id
-
-    if uid in current_encoding:
-        proc = current_encoding[uid]
-        proc.kill()
-        current_encoding.pop(uid, None)
-        return await m.reply("🛑 Cancelled")
-
-    await m.reply("❌ No task")
+async def start(client, message: Message):
+    await message.reply(f"🔥 Bot Online!\n\n{edit}")
 
 @app.on_message(filters.command("hsub"))
-async def hsub(client, m):
-    if not is_authorized(m):
-        return
-
-    r = m.reply_to_message
+async def hsub(client, message: Message):
+    if not is_authorized(message): return
+    r = message.reply_to_message
     if not r or not (r.video or r.document):
-        return await m.reply("Reply to video")
+        return await message.reply("Reply video")
 
-    users_data[m.from_user.id] = {
-        "video": r.video.file_id if r.video else r.document.file_id,
-        "chat": m.chat.id,
-        "state": "sub"
+    users_data[message.from_user.id] = {
+        "video": {"file_id": (r.video or r.document).file_id, "file_name": "video.mp4"},
+        "chat_id": message.chat.id,
+        "state": "WAIT_SUB"
     }
-    await m.reply("Send subtitle")
+    await message.reply("Send subtitle")
 
 @app.on_message(filters.document)
-async def sub(client, m):
-    uid = m.from_user.id
-    if uid not in users_data:
-        return
+async def sub(client, message: Message):
+    uid = message.from_user.id
+    if uid not in users_data: return
 
-    if users_data[uid]["state"] == "sub":
-        users_data[uid]["sub"] = m.document.file_id
-        task_queue.append(users_data.pop(uid))
-        await m.reply(f"✅ Added to queue {len(task_queue)}")
+    users_data[uid]["subtitle"] = {"file_id": message.document.file_id}
+    task_queue.append(users_data.pop(uid))
+    await message.reply("Added to queue")
 
 # ================= WORKER =================
 
@@ -175,46 +188,47 @@ async def worker():
             continue
 
         task = task_queue.popleft()
-        uid = uid = task["chat"]
+        uid = task["chat_id"]
 
-        msg = await app.send_message(task["chat"], "⏳ Processing")
+        status = await app.send_message(uid, "Processing...")
 
         try:
-            v = await download_file(app, task["video"])
-            s = await download_file(app, task["sub"])
+            v = await download_with_verification(app, task["video"]["file_id"], status)
 
-            if os.path.getsize(v) > 500 * 1024 * 1024:
-                await msg.edit("❌ Too big")
+            if os.path.getsize(v) > 300 * 1024 * 1024:  # FIX
+                await status.edit("Too big")
                 continue
 
+            s = await download_with_verification(app, task["subtitle"]["file_id"], status)
+
             out = "output.mp4"
+            dur = await get_duration(v)
 
-            await encode(v, s, out, 0, msg, uid)
+            await encode_with_progress(v, s, out, dur, status, uid)
 
-            await app.send_document(task["chat"], out)
+            await app.send_document(uid, out)
 
-            await msg.edit("✅ Done")
+            await status.edit("Done")
 
         except Exception as e:
-            await msg.edit(f"❌ {e}")
+            await status.edit(str(e))
 
         finally:
-            for f in os.listdir(tempfile.gettempdir()):
-                try:
+            try:
+                for f in os.listdir(tempfile.gettempdir()):
                     os.remove(os.path.join(tempfile.gettempdir(), f))
-                except:
-                    pass
+            except:
+                pass
 
 # ================= HEALTH =================
 
 class HealthHandler(BaseHTTPRequestHandler):
-
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
 
-    def do_HEAD(self):
+    def do_HEAD(self):  # FIX
         self.send_response(200)
         self.end_headers()
 
@@ -224,8 +238,10 @@ def run_server():
 # ================= MAIN =================
 
 async def main():
+    if edit != "Maintanence by: @Sub_and_hardsub":
+        return
     await app.start()
-    print("Bot Started")
+    print("Bot started")
     asyncio.create_task(worker())
     await idle()
 

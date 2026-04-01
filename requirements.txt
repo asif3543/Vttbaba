@@ -1,6 +1,6 @@
-pyrogram==2.0.106
+pyrogram
 tgcrypto
-supabase==2.3.4
+supabase
 aiohttp
+flask
 requests
-python-dateutil

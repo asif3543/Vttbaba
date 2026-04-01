@@ -1,16 +1,14 @@
-from flask import Flask
-import threading
+from aiohttp import web
 
-app = Flask(__name__)
+async def handle(request):
+    return web.Response(text="🚀 Bot is Alive, Running on Render 512MB Free Tier & Connected to Supabase!")
 
-@app.route('/')
-def health_check():
-    return "Bot is Alive & Running on Render! Made by OP Developer."
-
-def run_server():
-    app.run(host="0.0.0.0", port=10000)
-
-def keep_alive():
-    t = threading.Thread(target=run_server)
-    t.daemon = True
-    t.start()
+async def web_server():
+    web_app = web.Application()
+    web_app.router.add_get('/', handle)
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    # Render port 10000 require karta hai
+    site = web.TCPSite(runner, '0.0.0.0', 10000)
+    await site.start()
+    print("🌐 Web Server Started on Port 10000")

@@ -1,25 +1,22 @@
 import os
 
-# IDs ko safely integer me convert karne ka function
-def safe_int(value, default=0):
-    try:
-        return int(str(value).strip())
-    except (ValueError, TypeError):
-        return default
+def get_int(key, default=0):
+    try: return int(str(os.getenv(key, default)).strip())
+    except: return default
 
-API_ID = safe_int(os.getenv("API_ID", 0))
+API_ID = get_int("API_ID", 57785446)
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
-OWNER_ID = safe_int(os.getenv("OWNER_ID", 0))
-ALLOWED_USER = safe_int(os.getenv("ALLOWED_USER", 0))
-ALLOWED_GROUP = safe_int(os.getenv("ALLOWED_GROUP", 0))
-STORAGE_CHANNEL_ID = safe_int(os.getenv("STORAGE_CHANNEL_ID", 0))
+OWNER_ID = get_int("OWNER_ID", 5351848105)
+ALLOWED_USER = get_int("ALLOWED_USER", 5344078567)
+ALLOWED_GROUP = get_int("ALLOWED_GROUP", -1003899919015)
+STORAGE_CHANNEL_ID = get_int("STORAGE_CHANNEL_ID", -1003096528862)
 
-# Ye log bot ko control kar sakte hain
-ADMINS = [OWNER_ID, ALLOWED_USER]
-if ALLOWED_GROUP != 0:
-    ADMINS.append(ALLOWED_GROUP)
+PORT = get_int("PORT", 10000)
+
+# Admins list
+ADMINS = [OWNER_ID, ALLOWED_USER, ALLOWED_GROUP]

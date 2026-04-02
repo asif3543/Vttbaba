@@ -4,3 +4,4 @@ supabase
 python-dotenv
 flask
 gunicorn
+httpx

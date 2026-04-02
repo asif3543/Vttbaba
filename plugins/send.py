@@ -1,53 +1,143 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from plugins.post import STATE
-from database import db
 from config import Config
+from database import db
+from plugins.post import user_states
 
-def get_channels():
-    return db.table("channels").select("*").execute().data
+# ==============================
+# 🔰 SEND (SINGLE)
+# ==============================
+@Client.on_message(filters.command("send") & filters.private)
+async def send_single(client: Client, message: Message):
 
-@Client.on_message(filters.command(["send", "send_more_channel", "send more channel"]) & filters.private)
-async def send_cmd(client, message: Message):
     user_id = message.from_user.id
-    if user_id not in Config.ALLOWED_USERS: return
-    
-    channels = get_channels()
+
+    if user_id not in user_states:
+        return await message.reply("❌ No post found. Use /post first")
+
+    channels = await db.get_channels()
+
     if not channels:
-        return await message.reply_text("No channels added in database!")
+        return await message.reply("❌ No channels found")
 
-    buttons = [[InlineKeyboardButton(ch['channel_name'], callback_data=f"sendto_{ch['channel_id']}")] for ch in channels]
-    
-    STATE[user_id]["selected_channels"] = []
-    STATE[user_id]["send_mode"] = "multi" if "more" in message.text else "single"
-    
-    await message.reply_text("Select channel(s):\n(Click /yes to confirm sending)", reply_markup=InlineKeyboardMarkup(buttons))
+    buttons = []
+    for ch in channels:
+        buttons.append([
+            InlineKeyboardButton(ch["channel_name"], callback_data=f"select_{ch['channel_id']}")
+        ])
 
-@Client.on_callback_query(filters.regex(r"^sendto_"))
-async def select_channel(client, query: CallbackQuery):
-    ch_id = int(query.data.split("_")[1])
-    user_id = query.from_user.id
-    
-    if ch_id not in STATE[user_id].get("selected_channels", []):
-        STATE[user_id]["selected_channels"].append(ch_id)
-        
-    await query.answer("Channel selected! Click /yes to send.", show_alert=False)
+    user_states[user_id]["mode"] = "single"
+    user_states[user_id]["selected_channels"] = []
 
-@Client.on_message(filters.command("yes") & filters.private)
-async def confirm_send(client, message: Message):
+    await message.reply(
+        "📢 Select a channel:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+# ==============================
+# 🔰 SEND MULTIPLE
+# ==============================
+@Client.on_message(filters.command("send more channel") & filters.private)
+async def send_multi(client: Client, message: Message):
+
     user_id = message.from_user.id
-    if "final_post" not in STATE.get(user_id, {}): return
-    
-    channels = STATE[user_id].get("selected_channels", [])
-    post = STATE[user_id]["final_post"]
-    
-    if not channels: return await message.reply_text("No channels selected!")
-    
-    for ch_id in channels:
+
+    if user_id not in user_states:
+        return await message.reply("❌ No post found")
+
+    channels = await db.get_channels()
+
+    if not channels:
+        return await message.reply("❌ No channels found")
+
+    buttons = []
+    for ch in channels:
+        buttons.append([
+            InlineKeyboardButton(ch["channel_name"], callback_data=f"multi_{ch['channel_id']}")
+        ])
+
+    user_states[user_id]["mode"] = "multi"
+    user_states[user_id]["selected_channels"] = []
+
+    await message.reply(
+        "📢 Select multiple channels:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+# ==============================
+# 🔰 CHANNEL SELECT
+# ==============================
+@Client.on_callback_query()
+async def channel_select(client: Client, query: CallbackQuery):
+
+    user_id = query.from_user.id
+
+    if user_id not in user_states:
+        return await query.answer("❌ Session expired", show_alert=True)
+
+    data = query.data
+
+    # 🔹 SINGLE SELECT
+    if data.startswith("select_"):
+        channel_id = int(data.split("_")[1])
+
+        user_states[user_id]["selected_channels"] = [channel_id]
+
+        await query.message.reply("✅ Selected\n\nType /confirm to send")
+        await query.answer()
+
+    # 🔹 MULTI SELECT
+    elif data.startswith("multi_"):
+        channel_id = int(data.split("_")[1])
+
+        selected = user_states[user_id]["selected_channels"]
+
+        if channel_id in selected:
+            selected.remove(channel_id)
+        else:
+            selected.append(channel_id)
+
+        await query.answer("✅ Updated selection")
+
+
+# ==============================
+# 🔰 CONFIRM SEND
+# ==============================
+@Client.on_message(filters.command("confirm") & filters.private)
+async def confirm_send(client: Client, message: Message):
+
+    user_id = message.from_user.id
+
+    if user_id not in user_states:
+        return
+
+    data = user_states[user_id]
+
+    selected = data.get("selected_channels")
+
+    if not selected:
+        return await message.reply("❌ No channel selected")
+
+    post_message_id = data.get("post_message_id")
+
+    if not post_message_id:
+        return await message.reply("❌ No post data")
+
+    sent = 0
+
+    for channel_id in selected:
         try:
-            await client.copy_message(ch_id, user_id, post["msg_id"], reply_markup=post["markup"])
+            await client.copy_message(
+                chat_id=channel_id,
+                from_chat_id=message.chat.id,
+                message_id=post_message_id
+            )
+            sent += 1
         except Exception as e:
-            await message.reply_text(f"Error sending to {ch_id}: {e}")
-            
-    await message.reply_text("Post sent ✅")
-    del STATE[user_id]
+            await message.reply(f"❌ Failed: {channel_id}\n{e}")
+
+    await message.reply(f"✅ Sent to {sent} channel(s)")
+
+    user_states.pop(user_id, None)

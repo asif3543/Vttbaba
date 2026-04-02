@@ -5,7 +5,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Supabase Client Initialize kar rahe hain
+# Supabase Client Connect
 try:
     db: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
     logger.info("✅ Supabase Database Connected Successfully!")

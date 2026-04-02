@@ -1,101 +1,161 @@
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from database import db, get_short_link
+from pyrogram.types import Message
 from config import Config
-import uuid
+from database import db
 
-# Memory for user states
-STATE = {}
+# 🔰 TEMP USER STATE (in-memory)
+user_states = {}
 
-def is_admin(user_id):
-    return user_id in Config.ALLOWED_USERS
-
+# ==============================
+# 🔰 START POST
+# ==============================
 @Client.on_message(filters.command("post") & filters.private)
-async def start_post(client, message: Message):
-    if not is_admin(message.from_user.id): return
-    STATE[message.from_user.id] = {"step": "SEND_POST"}
-    await message.reply_text("Send post\n(Forward media: document/photo/video with caption)")
+async def post_command(client: Client, message: Message):
 
-@Client.on_message(filters.command(["link", "single link"]) & filters.private)
-async def single_link_cmd(client, message: Message):
     user_id = message.from_user.id
-    if user_id in STATE and STATE[user_id].get("step") == "LINK_TYPE":
-        STATE[user_id]["type"] = "single"
-        STATE[user_id]["step"] = "SEND_EPISODE"
-        await message.reply_text("Send episode")
 
-@Client.on_message(filters.command(["batch_link", "batch link"]) & filters.private)
-async def batch_link_cmd(client, message: Message):
+    # ✅ Admin check
+    if user_id != Config.OWNER_ID and user_id not in Config.ALLOWED_USERS:
+        return await message.reply("❌ Not authorized")
+
+    user_states[user_id] = {
+        "step": "waiting_post"
+    }
+
+    await message.reply("📩 Send post (photo/video/document)")
+
+
+# ==============================
+# 🔰 RECEIVE POST MEDIA
+# ==============================
+@Client.on_message(
+    (filters.photo | filters.video | filters.document) & filters.private
+)
+async def receive_post(client: Client, message: Message):
+
     user_id = message.from_user.id
-    if user_id in STATE and STATE[user_id].get("step") == "LINK_TYPE":
-        STATE[user_id]["type"] = "batch"
-        STATE[user_id]["episodes"] = []
-        STATE[user_id]["step"] = "SEND_BATCH_EPISODE"
-        await message.reply_text("Send episode")
 
-@Client.on_message(filters.command(["hmm", "confirm"]) & filters.private)
-async def confirm_post(client, message: Message):
+    if user_id not in user_states:
+        return
+
+    if user_states[user_id]["step"] != "waiting_post":
+        return
+
+    # Save message_id (IMPORTANT)
+    user_states[user_id]["post_message_id"] = message.id
+    user_states[user_id]["step"] = "choose_type"
+
+    await message.reply(
+        "✅ Post received\n\n"
+        "Send:\n"
+        "/link → Single Episode\n"
+        "/batch → Batch Episodes"
+    )
+
+
+# ==============================
+# 🔰 SINGLE LINK MODE
+# ==============================
+@Client.on_message(filters.command("link") & filters.private)
+async def single_link(client: Client, message: Message):
+
     user_id = message.from_user.id
-    if user_id not in STATE or STATE[user_id].get("step") != "CONFIRM": return
-    
-    data = STATE[user_id]
-    unique_id = str(uuid.uuid4())[:8]
-    
-    if data["type"] == "single":
-        post_id = f"single_{unique_id}"
-        db.table("posts").insert({"id": unique_id, "message_id": data["ep_msg_id"], "button_text": f"Watch episode {data['num']}", "type": "single"}).execute()
-        btn_text = f"Watch episode {data['num']}"
-    else:
-        post_id = f"batch_{unique_id}"
-        db.table("batch_posts").insert({"id": unique_id, "start_message_id": data["episodes"][0], "end_message_id": data["episodes"][-1], "range": data["num"]}).execute()
-        btn_text = f"Watch episode {data['num']}"
 
-    # Generate Short Link
-    deep_link = f"https://t.me/{client.me.username}?start={post_id}"
-    short_link = get_short_link(deep_link)
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton(btn_text, url=short_link)]])
-    
-    # Send Final Poster Preview to Admin
-    await client.copy_message(user_id, user_id, data["thumb_msg_id"], reply_markup=markup)
-    
-    STATE[user_id]["final_post"] = {"msg_id": data["thumb_msg_id"], "markup": markup}
-    STATE[user_id]["step"] = "READY_TO_SEND"
-    
-    await message.reply_text("Post ready 👇\n\nUse commands:\n/send (For single channel)\n/send_more_channel (For multi channels)")
+    if user_id not in user_states:
+        return await message.reply("❌ Use /post first")
 
-@Client.on_message(filters.private & ~filters.command(["start", "post", "link", "batch_link", "hmm", "confirm", "send", "send_more_channel", "yes", "delete", "hu_hu"]))
-async def state_handler(client, message: Message):
+    user_states[user_id]["step"] = "waiting_episode"
+
+    await message.reply("📥 Send episode (forward from storage channel)")
+
+
+# ==============================
+# 🔰 RECEIVE EPISODE
+# ==============================
+@Client.on_message(filters.forwarded & filters.private)
+async def receive_episode(client: Client, message: Message):
+
     user_id = message.from_user.id
-    if user_id not in STATE: return
-    step = STATE[user_id].get("step")
 
-    if step == "SEND_POST":
-        if message.photo or message.video or message.document:
-            STATE[user_id]["thumb_msg_id"] = message.id
-            STATE[user_id]["step"] = "LINK_TYPE"
-            await message.reply_text("Post successfully received\nPlease provide single link or batch link")
-        else:
-            await message.reply_text("Please forward media (Poster)!")
+    if user_id not in user_states:
+        return
 
-    elif step == "SEND_EPISODE":
-        if message.video or message.document:
-            fwd = await message.copy(Config.STORAGE_CHANNEL)
-            STATE[user_id]["ep_msg_id"] = fwd.id
-            STATE[user_id]["step"] = "WAIT_NUM"
-            await message.reply_text("Enter number (e.g. 07)")
+    step = user_states[user_id].get("step")
 
-    elif step == "WAIT_NUM":
-        STATE[user_id]["num"] = message.text
-        STATE[user_id]["step"] = "CONFIRM"
-        await message.reply_text("Type /confirm or /hmm")
+    # 🔹 SINGLE MODE
+    if step == "waiting_episode":
 
-    elif step == "SEND_BATCH_EPISODE":
-        if message.video or message.document:
-            fwd = await message.copy(Config.STORAGE_CHANNEL)
-            STATE[user_id]["episodes"].append(fwd.id)
-            if len(STATE[user_id]["episodes"]) == 1:
-                await message.reply_text("Send next episode")
-        elif message.text: # If text is received during batch, it's the range
-            STATE[user_id]["num"] = message.text
-            STATE[user_id]["step"] = "CONFIRM"
-            await message.reply_text("Batch successfully adding\nType /confirm or /hmm")
+        user_states[user_id]["episode_message_id"] = message.id
+        user_states[user_id]["step"] = "waiting_number"
+
+        await message.reply("🔢 Enter episode number (e.g. 07)")
+
+    # 🔹 BATCH MODE
+    elif step == "batch_collect":
+
+        if "batch_list" not in user_states[user_id]:
+            user_states[user_id]["batch_list"] = []
+
+        user_states[user_id]["batch_list"].append(message.id)
+
+        await message.reply("➕ Send next episode or type /done")
+
+
+# ==============================
+# 🔰 ENTER EPISODE NUMBER
+# ==============================
+@Client.on_message(filters.text & filters.private)
+async def episode_number(client: Client, message: Message):
+
+    user_id = message.from_user.id
+
+    if user_id not in user_states:
+        return
+
+    if user_states[user_id].get("step") != "waiting_number":
+        return
+
+    number = message.text.strip()
+
+    user_states[user_id]["episode_number"] = number
+    user_states[user_id]["step"] = "confirm_post"
+
+    await message.reply("✅ Type /confirm to finalize")
+
+
+# ==============================
+# 🔰 CONFIRM POST
+# ==============================
+@Client.on_message(filters.command("confirm") & filters.private)
+async def confirm_post(client: Client, message: Message):
+
+    user_id = message.from_user.id
+
+    if user_id not in user_states:
+        return
+
+    data = user_states[user_id]
+
+    if data.get("step") != "confirm_post":
+        return
+
+    # 🔹 Save to DB
+    post_id = await db.create_post(
+        message_id=data["post_message_id"],
+        episode_message_id=data["episode_message_id"],
+        number=data["episode_number"]
+    )
+
+    # 🔹 Generate deep link
+    bot_username = (await client.get_me()).username
+    deep_link = f"https://t.me/{bot_username}?start=post_{post_id}"
+
+    # 🔹 Send preview
+    await message.reply(
+        f"✅ Post Ready!\n\n"
+        f"🔗 Link:\n{deep_link}\n\n"
+        f"Use /send to publish"
+    )
+
+    # Reset state
+    user_states.pop(user_id)

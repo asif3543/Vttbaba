@@ -1,8 +1,8 @@
-Enterfrom pyrogram import Client, filters
+from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from database import is_premium, get_force_subs, get_shorteners, get_post, get_batch
 from config import STORAGE_CHANNEL_ID
-import asyncio, requests, random
+import asyncio, aiohttp, random
 
 async def check_force_sub(client, user_id):
     not_joined =[]
@@ -18,9 +18,12 @@ async def get_short_link(long_url):
     if not shorteners: return long_url
     acc = random.choice(shorteners)
     try:
-        res = requests.get(f"{acc['api_url']}?api={acc['api_key']}&url={long_url}").json()
-        if "shortenedUrl" in res: return res["shortenedUrl"]
-        if "short" in res: return res["short"]
+        url = f"{acc['api_url']}?api={acc['api_key']}&url={long_url}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as res:
+                data = await res.json()
+                if "shortenedUrl" in data: return data["shortenedUrl"]
+                if "short" in data: return data["short"]
     except: pass
     return long_url
 
@@ -32,7 +35,7 @@ async def start_cmd(client: Client, message: Message):
     if len(args) > 1:
         payload = args[1]
         
-        # 1. Force Sub Check for Free Users
+        # 1. Force Sub Check
         if not await is_premium(user_id):
             not_joined = await check_force_sub(client, user_id)
             if not_joined:
@@ -44,7 +47,7 @@ async def start_cmd(client: Client, message: Message):
                 btns.append([InlineKeyboardButton("🔄 Try Again", url=f"https://t.me/{bot_info.username}?start={payload}")])
                 return await message.reply_text("Join first", reply_markup=InlineKeyboardMarkup(btns))
 
-            # 2. Shortener Bypass Logic
+            # 2. Shortener Check
             if not payload.startswith("ver_"):
                 bot_info = await client.get_me()
                 long_url = f"https://t.me/{bot_info.username}?start=ver_{payload}"
@@ -52,10 +55,9 @@ async def start_cmd(client: Client, message: Message):
                 btn = InlineKeyboardMarkup([[InlineKeyboardButton("Verify & Watch", url=short_url)]])
                 return await message.reply_text("Please solve the link to get the episode.", reply_markup=btn)
 
-        # 3. Clean Payload
         if payload.startswith("ver_"): payload = payload.replace("ver_", "")
 
-        # 4. SEND EPISODES
+        # 3. SEND EPISODES
         sent_msgs =[]
         await message.reply_text("Sending episode... Auto delete after 5 min ⏳")
         
@@ -75,10 +77,10 @@ async def start_cmd(client: Client, message: Message):
                     sent_msgs.append(msg)
                     await asyncio.sleep(0.5)
 
-        # 5. AUTO DELETE ⏳
+        # 4. AUTO DELETE
         await asyncio.sleep(300)
         for m in sent_msgs:
             try: await m.delete()
             except: pass
     else:
-        await message.reply_text("Welcome message / Bot intro\n\nI am a permanent file store bot.")
+        await message.reply_text("Welcome to Advanced File Store Bot!")

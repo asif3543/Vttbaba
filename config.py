@@ -11,6 +11,7 @@ class Config:
     STORAGE_CHANNEL = -1003096528862
     ALLOWED_GROUP = -1003899919015
 
+    PORT = 10000
     SUPABASE_URL = "https://dxvnreuovwoncgonbggg.supabase.co"
     SUPABASE_KEY = "sb_publishable_jNeOKE9aANf2hVZtEiB9dQ_YCinuxVP"
 

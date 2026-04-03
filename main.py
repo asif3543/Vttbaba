@@ -1,30 +1,20 @@
-from pyrogram import Client, idle
+from pyrogram import Client, filters, idle
 from pyrogram.errors import FloodWait
 from config import API_ID, API_HASH, BOT_TOKEN
 from aiohttp import web
 import asyncio, os, sys
 import uvloop
 
-# 1. Install Superfast uvloop implementation
 uvloop.install()
-
-# 🛠️ 2. FIX: Pyrogram के लिए Event Loop पहले से बनाकर सेट करें
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
-if not BOT_TOKEN or API_ID == 0:
-    print("❌ ERROR: Missing Environment Variables!")
-    sys.exit(1)
+app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True, plugins={"root": "plugins"})
 
-# in_memory=True prevents SQLite lock issues on Render
-app = Client(
-    "bot", 
-    api_id=API_ID, 
-    api_hash=API_HASH, 
-    bot_token=BOT_TOKEN, 
-    in_memory=True,  
-    plugins={"root": "plugins"}
-)
+# 🔴 यह डायरेक्ट कमांड है, यह बताएगी कि बॉट मैसेज पढ़ रहा है या नहीं
+@app.on_message(filters.command("ping"))
+async def ping_test(client, message):
+    await message.reply_text("✅ Pong! Bot is 100% Alive and reading messages!")
 
 async def web_server():
     webapp = web.Application()
@@ -42,15 +32,12 @@ async def main():
             print(f"✅ Stable Production Bot Started: @{bot_info.username}")
             break
         except FloodWait as e:
-            print(f"⚠️ FloodWait Detected! Sleeping for {e.value + 5}s...")
             await asyncio.sleep(e.value + 5)
         except Exception as e:
-            print(f"❌ Core Crash: {e}")
             sys.exit(1)
             
     await idle()
     await app.stop()
 
 if __name__ == "__main__":
-    # 🛠️ 3. FIX: Pyrogram के app.run() की जगह standard asyncio loop का यूज़
     loop.run_until_complete(main())

@@ -7,6 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-PORT 10000
+EXPOSE 10000
 
 CMD ["python3", "main.py"]

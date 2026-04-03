@@ -1,5 +1,7 @@
 import aiohttp
 import uuid
+import orjson
+from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 from config import SUPABASE_URL, SUPABASE_KEY
 
@@ -12,12 +14,19 @@ HEADERS = {
 BASE_URL = f"{SUPABASE_URL}/rest/v1"
 
 async def _req(method, endpoint, payload=None):
+    """Core Request function with proper Error Handling"""
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(json_serialize=orjson.dumps) as session:
             async with session.request(method, f"{BASE_URL}/{endpoint}", headers=HEADERS, json=payload) as res:
-                if res.status in[200, 201]: return await res.json()
-    except: pass
-    return[]
+                if res.status in [200, 201, 204]:
+                    text = await res.text()
+                    return orjson.loads(text) if text else[]
+                else:
+                    print(f"DB Error: {res.status} -> {await res.text()}")
+                    return None
+    except Exception as e:
+        print(f"DB Request Exception: {e}")
+        return None
 
 # --- POSTS SYSTEM ---
 async def add_post(file_id, button_text, post_type="single"):
@@ -44,28 +53,33 @@ async def get_batch(batch_id):
 # --- PREMIUM SYSTEM ---
 async def add_premium(user_id):
     expiry = (datetime.now(timezone.utc) + timedelta(days=28)).isoformat()
-    await _req("POST", "premium_users?on_conflict=user_id", {"user_id": user_id, "expiry_date": expiry})
+    return await _req("POST", "premium_users?on_conflict=user_id", {"user_id": user_id, "expiry_date": expiry})
 
 async def remove_premium(user_id):
-    await _req("DELETE", f"premium_users?user_id=eq.{user_id}")
+    return await _req("DELETE", f"premium_users?user_id=eq.{user_id}")
 
 async def is_premium(user_id):
     res = await _req("GET", f"premium_users?user_id=eq.{user_id}")
     if res:
         expiry = datetime.fromisoformat(res[0]["expiry_date"])
-        if expiry > datetime.now(timezone.utc): return True
-        else: await remove_premium(user_id)
+        if expiry > datetime.now(timezone.utc): 
+            return True
+        else: 
+            await remove_premium(user_id)
     return False
 
 # --- SHORTENER SYSTEM ---
-async def add_shortener(name, api_url, api_key):
-    await _req("POST", "shortner_accounts", {"name": name, "api_url": api_url, "api_key": api_key})
+async def add_shortener(api_url, api_key):
+    # Extract name dynamically (e.g., gplinks.in)
+    domain = urlparse(api_url).netloc or "Unknown"
+    return await _req("POST", "shortner_accounts", {"name": domain, "api_url": api_url, "api_key": api_key})
 
 async def get_shorteners():
-    return await _req("GET", "shortner_accounts")
+    res = await _req("GET", "shortner_accounts")
+    return res if res else[]
 
 async def remove_shortener(short_id):
-    await _req("DELETE", f"shortner_accounts?id=eq.{short_id}")
+    return await _req("DELETE", f"shortner_accounts?id=eq.{short_id}")
 
 # --- FORCE SUB SYSTEM ---
 async def add_force_sub(channel_id, name):
@@ -73,7 +87,9 @@ async def add_force_sub(channel_id, name):
     await _req("POST", "channels?on_conflict=channel_id", {"channel_id": channel_id, "channel_name": name})
 
 async def get_force_subs():
-    return await _req("GET", "force_sub_channels")
+    res = await _req("GET", "force_sub_channels")
+    return res if res else[]
 
 async def get_channels():
-    return await _req("GET", "channels")
+    res = await _req("GET", "channels")
+    return res if res else[]

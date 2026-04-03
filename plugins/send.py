@@ -1,12 +1,13 @@
-Enterfrom pyrogram import Client, filters
+from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from config import ADMINS, USER_STATE
 from database import get_channels
 
-@Client.on_message(filters.command(["send", "send more channel"]) & filters.user(ADMINS) & filters.private)
+@Client.on_message((filters.command("send") | filters.regex(r"(?i)^/send more channel")) & filters.user(ADMINS) & filters.private)
 async def send_cmd(client: Client, message: Message):
     user_id = message.from_user.id
-    if USER_STATE.get(user_id, {}).get("step") != "ready_to_send": return
+    if USER_STATE.get(user_id, {}).get("step") != "ready_to_send":
+        return await message.reply_text("❌ Create a post first using /post")
     
     channels = await get_channels()
     if not channels: return await message.reply_text("No channels found.")
@@ -36,7 +37,9 @@ async def select_ch(client: Client, query: CallbackQuery):
 async def do_send(client: Client, message: Message):
     user_id = message.from_user.id
     state = USER_STATE.get(user_id, {})
-    if "selected" not in state or not state["selected"]: return
+    
+    if state.get("step") != "ready_to_send" or not state.get("selected"): 
+        return
     
     for ch in state["selected"]:
         await client.copy_message(chat_id=ch, from_chat_id=user_id, message_id=state["post_msg_id"], reply_markup=state["ready_btn"])

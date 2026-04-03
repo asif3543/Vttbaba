@@ -1,83 +1,66 @@
-import aiohttp
-from config import Config
+from supabase import create_client, Client
+from config import SUPABASE_URL, SUPABASE_KEY
+from datetime import datetime, timedelta
+import uuid
 
-class Database:
-    def __init__(self):
-        self.base_url = f"{Config.SUPABASE_URL}/rest/v1"
-        self.headers = {
-            "apikey": Config.SUPABASE_KEY,
-            "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation"
-        }
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    async def _request(self, method, endpoint, payload=None):
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = f"{self.base_url}/{endpoint}"
-                async with session.request(method, url, headers=self.headers, json=payload) as resp:
-                    if resp.status in [200, 201]:
-                        return await resp.json()
-                    return []
-        except:
-            return[]
+# --- POSTS SYSTEM ---
+def add_post(file_id, button_text, post_type="single"):
+    post_id = str(uuid.uuid4())[:8]
+    data = {"post_id": post_id, "file_id": file_id, "button_text": button_text, "type": post_type}
+    supabase.table("posts").insert(data).execute()
+    return post_id
 
-    # 🔰 POSTS
-    async def create_post(self, msg_id, file_id, btn_text):
-        data = {"message_id": msg_id, "file_id": str(file_id), "button_text": btn_text, "type": "single"}
-        res = await self._request("POST", "posts", data)
-        return res[0]["id"] if res else None
+def get_post(post_id):
+    res = supabase.table("posts").select("*").eq("post_id", post_id).execute()
+    return res.data[0] if res.data else None
 
-    async def get_post(self, post_id):
-        res = await self._request("GET", f"posts?id=eq.{post_id}")
-        return res[0] if res else None
+# --- BATCH SYSTEM ---
+def add_batch(start_id, end_id, range_text):
+    batch_id = str(uuid.uuid4())[:8]
+    data = {"batch_id": batch_id, "start_file_id": start_id, "end_file_id": end_id, "range_text": range_text}
+    supabase.table("batch_posts").insert(data).execute()
+    return batch_id
 
-    # 🔰 BATCH POSTS
-    async def create_batch_post(self, start_id, end_id, range_text):
-        data = {"start_message_id": start_id, "end_message_id": end_id, "range": range_text, "link": ""}
-        res = await self._request("POST", "batch_posts", data)
-        return res[0]["id"] if res else None
+def get_batch(batch_id):
+    res = supabase.table("batch_posts").select("*").eq("batch_id", batch_id).execute()
+    return res.data[0] if res.data else None
 
-    async def get_batch(self, batch_id):
-        res = await self._request("GET", f"batch_posts?id=eq.{batch_id}")
-        return res[0] if res else None
+# --- PREMIUM SYSTEM ---
+def add_premium(user_id):
+    expiry = (datetime.utcnow() + timedelta(days=28)).isoformat()
+    supabase.table("premium_users").upsert({"user_id": user_id, "expiry_date": expiry}).execute()
 
-    # 🔰 PREMIUM
-    async def add_premium(self, user_id, expiry_date):
-        payload = {"user_id": user_id, "expiry_date": str(expiry_date)}
-        await self._request("POST", "premium_users?on_conflict=user_id", payload)
+def remove_premium(user_id):
+    supabase.table("premium_users").delete().eq("user_id", user_id).execute()
 
-    async def remove_premium(self, user_id):
-        await self._request("DELETE", f"premium_users?user_id=eq.{user_id}")
+def is_premium(user_id):
+    res = supabase.table("premium_users").select("*").eq("user_id", user_id).execute()
+    if res.data:
+        expiry = datetime.fromisoformat(res.data[0]["expiry_date"])
+        if expiry > datetime.utcnow():
+            return True
+        else:
+            remove_premium(user_id) # expired
+    return False
 
-    async def get_premium(self, user_id):
-        res = await self._request("GET", f"premium_users?user_id=eq.{user_id}")
-        return res[0] if res else None
+# --- SHORTENER SYSTEM ---
+def add_shortener(name, api_url, api_key):
+    supabase.table("shortner_accounts").insert({"name": name, "api_url": api_url, "api_key": api_key}).execute()
 
-    async def get_all_premium(self):
-        return await self._request("GET", "premium_users")
+def remove_shortener(short_id):
+    supabase.table("shortner_accounts").delete().eq("id", short_id).execute()
 
-    # 🔰 CHANNELS & FORCE SUB
-    async def get_channels(self):
-        return await self._request("GET", "channels")
+def get_shorteners():
+    return supabase.table("shortner_accounts").select("*").execute().data
 
-    async def add_force_channel(self, channel_id, channel_name):
-        payload = {"channel_id": channel_id, "channel_name": channel_name}
-        await self._request("POST", "force_sub_channels?on_conflict=channel_id", payload)
-        await self._request("POST", "channels?on_conflict=channel_id", payload)
+# --- FORCE SUB SYSTEM ---
+def add_force_sub(channel_id, name):
+    supabase.table("force_sub_channels").upsert({"channel_id": channel_id, "channel_name": name}).execute()
 
-    async def get_force_channels(self):
-        return await self._request("GET", "force_sub_channels")
+def get_force_subs():
+    return supabase.table("force_sub_channels").select("*").execute().data
 
-    # 🔰 SHORTNER
-    async def add_shortner(self, name, api_url, api_key):
-        payload = {"name": name, "api_url": api_url, "api_key": api_key}
-        await self._request("POST", "shortner_accounts", payload)
-
-    async def get_shortners(self):
-        return await self._request("GET", "shortner_accounts")
-
-    async def delete_shortner(self, shortner_id):
-        await self._request("DELETE", f"shortner_accounts?id=eq.{shortner_id}")
-
-db = Database()
+def get_channels():
+    return supabase.table("channels").select("*").execute().data

@@ -3,13 +3,16 @@ from pyrogram.errors import FloodWait
 from config import API_ID, API_HASH, BOT_TOKEN
 from aiohttp import web
 import asyncio, os, sys
+import uvloop
 
-# 🚨 Security Check: अगर Token नहीं है तो Render को बता दो
+# Install Superfast uvloop implementation
+uvloop.install()
+
 if not BOT_TOKEN or API_ID == 0:
-    print("❌ ERROR: BOT_TOKEN or API_ID is missing in Environment Variables!")
+    print("❌ ERROR: Missing Environment Variables!")
     sys.exit(1)
 
-# 🔥 in_memory=True डाला है ताकि Render पर Session File Lock न हो
+# in_memory=True prevents SQLite lock issues on Render
 app = Client(
     "bot", 
     api_id=API_ID, 
@@ -21,7 +24,7 @@ app = Client(
 
 async def web_server():
     webapp = web.Application()
-    webapp.router.add_get("/", lambda r: web.Response(text="Bot is Running Successfully!"))
+    webapp.router.add_get("/", lambda r: web.Response(text="Advanced Production Bot is Running!"))
     runner = web.AppRunner(webapp)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 10000))).start()
@@ -32,13 +35,13 @@ async def main():
         try:
             await app.start()
             bot_info = await app.get_me()
-            print(f"✅ Bot Started Successfully: @{bot_info.username}")
+            print(f"✅ Stable Production Bot Started: @{bot_info.username}")
             break
         except FloodWait as e:
-            print(f"⚠️ FloodWait! Sleeping for {e.value + 5} sec...")
+            print(f"⚠️ FloodWait Detected! Sleeping for {e.value + 5}s...")
             await asyncio.sleep(e.value + 5)
         except Exception as e:
-            print(f"❌ Critical Error in Bot Start: {e}")
+            print(f"❌ Core Crash: {e}")
             sys.exit(1)
             
     await idle()

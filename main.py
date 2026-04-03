@@ -10,7 +10,7 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True, plugins={"root": "plugins"})
-
+plugins = int(os.root("plugins"))
 # 🔴 यह डायरेक्ट कमांड है, यह बताएगी कि बॉट मैसेज पढ़ रहा है या नहीं
 @app.on_message(filters.command("ping"))
 async def ping_test(client, message):

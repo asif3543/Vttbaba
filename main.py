@@ -1,32 +1,21 @@
-from pyrogram import Client, idle
-from config import Config
-from aiohttp import web
-import asyncio
+import os
 
-app = Client(
-    "bot",
-    api_id=Config.API_ID,
-    api_hash=Config.API_HASH,
-    bot_token=Config.BOT_TOKEN,
-    plugins={"root": "plugins"}
-)
+class Config:
+    API_ID = int(os.environ.get("API_ID", "0"))
+    API_HASH = os.environ.get("API_HASH", "")
+    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
-async def web_server():
-    """Dummy web server to keep Render Free Tier alive"""
-    webapp = web.Application()
-    webapp.router.add_get("/", lambda r: web.Response(text="Bot is running smoothly on Render!"))
-    runner = web.AppRunner(webapp)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 10000)
-    await site.start()
+    # Security Control
+    OWNER_ID = 5351848105
+    ALLOWED_USERS = [5344078567, 5351848105]
 
-async def main():
-    print("🚀 Starting Web Server for Render...")
-    await web_server()
-    print("🚀 Starting Telegram Bot...")
-    await app.start()
-    await idle()
-    await app.stop()
+    # Channels & Groups
+    STORAGE_CHANNEL = -1003096528862
+    ALLOWED_GROUP = -1003899919015
 
-if __name__ == "__main__":
-    app.run(main())
+    # Database
+    SUPABASE_URL = "https://dxvnreuovwoncgonbggg.supabase.co"
+    SUPABASE_KEY = "sb_publishable_jNeOKE9aANf2hVZtEiB9dQ_YCinuxVP"
+
+    # Global State Memory
+    STATE = {}

@@ -1,21 +1,47 @@
+from pyrogram import Client, idle
+from pyrogram.errors import FloodWait
+from config import Config
+from aiohttp import web
+import asyncio
 import os
 
-class Config:
-    API_ID = int(os.environ.get("API_ID", "0"))
-    API_HASH = os.environ.get("API_HASH", "")
-    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+app = Client(
+    "bot",
+    api_id=Config.API_ID,
+    api_hash=Config.API_HASH,
+    bot_token=Config.BOT_TOKEN,
+    plugins={"root": "plugins"}
+)
 
-    # Security Control
-    OWNER_ID = 5351848105
-    ALLOWED_USERS = [5344078567, 5351848105]
+async def web_server():
+    webapp = web.Application()
+    webapp.router.add_get("/", lambda r: web.Response(text="Bot is ALIVE on Render!"))
+    runner = web.AppRunner(webapp)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
 
-    # Channels & Groups
-    STORAGE_CHANNEL = -1003096528862
-    ALLOWED_GROUP = -1003899919015
+async def main():
+    print("🚀 Starting Web Server...")
+    await web_server()
+    
+    print("🚀 Starting Telegram Bot...")
+    while True:
+        try:
+            await app.start()
+            print("✅ Bot Started 🥰 Successfully!")
+            break
+        except FloodWait as e:
+            wait_time = e.value + 5
+            print(f"⚠️ FloodWait Detected! Sleeping for {wait_time}s to prevent ban...")
+            await asyncio.sleep(wait_time)
+        except Exception as e:
+            print(f"❌ Critical Error: {e}")
+            break
 
-    # Database
-    SUPABASE_URL = "https://dxvnreuovwoncgonbggg.supabase.co"
-    SUPABASE_KEY = "sb_publishable_jNeOKE9aANf2hVZtEiB9dQ_YCinuxVP"
+    await idle()
+    await app.stop()
 
-    # Global State Memory
-    STATE = {}
+if __name__ == "__main__":
+    app.run(main())

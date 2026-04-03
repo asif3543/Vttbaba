@@ -5,8 +5,12 @@ from aiohttp import web
 import asyncio, os, sys
 import uvloop
 
-# Install Superfast uvloop implementation
+# 1. Install Superfast uvloop implementation
 uvloop.install()
+
+# 🛠️ 2. FIX: Pyrogram के लिए Event Loop पहले से बनाकर सेट करें
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
 if not BOT_TOKEN or API_ID == 0:
     print("❌ ERROR: Missing Environment Variables!")
@@ -48,4 +52,5 @@ async def main():
     await app.stop()
 
 if __name__ == "__main__":
-    app.run(main())
+    # 🛠️ 3. FIX: Pyrogram के app.run() की जगह standard asyncio loop का यूज़
+    loop.run_until_complete(main())

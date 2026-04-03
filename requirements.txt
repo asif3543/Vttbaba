@@ -1,3 +1,6 @@
 pyrogram
 tgcrypto
-aiohttp
+supabase
+Flask
+requests
+python-dateutil

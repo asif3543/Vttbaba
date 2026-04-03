@@ -2,3 +2,4 @@ pyrogram
 tgcrypto
 supabase
 aiohttp
+python-dotenv

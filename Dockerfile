@@ -7,8 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Render ke liye important
+# Expose port for Render Free Tier web server
 EXPOSE 10000
 
-# Dummy server (sleep fix optional)
 CMD ["python3", "main.py"]

@@ -7,7 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Expose port for Render Free Tier web server
-EXPOSE 10000
+PORT 10000
 
 CMD ["python3", "main.py"]

@@ -1,10 +1,10 @@
 import os
 
 # Bot Configuration
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # 🔥 Apna bot token yahan daal
+BOT_TOKEN = "8397073883:AAEUc_qW_dzmxBzrHZehoczWl3MFY0Z4WNM"  # 🔥 Apna bot token yahan daal
 
-API_ID = 123456  # 🔥 Apna API ID daal
-API_HASH = "your_api_hash_here"  # 🔥 Apna API Hash daal
+API_ID = "35178818"  # 🔥 Apna API ID daal
+API_HASH = "d43a4cea9d57e2fe1151fd36c4792576"  # 🔥 Apna API Hash daal
 
 # Owner & Allowed Users
 OWNER_ID = 5351848105  # 🔥 Apna owner ID daal

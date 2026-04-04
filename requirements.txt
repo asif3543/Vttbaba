@@ -1,5 +1,2 @@
 pyrogram
 tgcrypto
-aiohttp
-uvloop
-orjson

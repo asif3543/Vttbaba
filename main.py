@@ -6,16 +6,16 @@ from config import API_ID, API_HASH, BOT_TOKEN
 uvloop.install()
 
 app = Client(
-    "post-bot",
+    "bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    plugins=dict(root="plugins")
+    plugins=dict(root=".")
 )
 
 async def main():
     await app.start()
-    print("✅ Bot Started Successfully")
+    print("✅ Bot Started")
     await idle()
 
 if __name__ == "__main__":

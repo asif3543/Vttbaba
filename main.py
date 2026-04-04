@@ -21,7 +21,6 @@ app = Client(
 )
 
 # ❌ REMOVE THIS LINE (ERROR)
-# plugins = int(os.root("plugins"))
 
 # ✅ Test command (bot alive check)
 @app.on_message(filters.command("ping"))

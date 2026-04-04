@@ -11,24 +11,24 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# 🔥 PORT ko int mein convert karo
 PORT = int(os.environ.get("PORT", 10000))
+
+async def health_check(request):
+    return web.Response(text="Bot is running!")
 
 async def main():
     dp.include_router(router)
     
-    # Webhook delete karo
+    # Webhook delete
     await bot.delete_webhook()
     
-    # Simple web server to keep Render happy
+    # Web server for health check
     app = web.Application()
-    
-    async def health_check(request):
-        return web.Response(text="Bot is running!")
-    
     app.router.add_get("/", health_check)
     app.router.add_get("/health", health_check)
     
-    # Run polling + web server together
+    # Start web server
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
@@ -37,11 +37,8 @@ async def main():
     print(f"🚀 Bot started on port {PORT}")
     print(f"🤖 Polling mode active")
     
-    # Start polling in background
-    polling_task = asyncio.create_task(dp.start_polling(bot, skip_updates=True))
-    
-    # Keep running
-    await polling_task
+    # Start polling
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())

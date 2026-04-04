@@ -66,4 +66,4 @@ async def main():
 
 # ▶️ Run
 if __name__ == "__main__":
-    loop.run_until_complete(main())
+    asyncio.run(main())

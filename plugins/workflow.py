@@ -1,91 +1,74 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.enums import MessageMediaType
-from config import ADMINS, BOT_TOKEN
+from config import ADMINS, USER_STATE
 from database import add_post, add_batch
-import requests
-
-# Temporary memory to store workflow state
-user_state = {}
 
 @Client.on_message(filters.command("post") & filters.user(ADMINS) & filters.private)
-async def start_post(client: Client, message: Message):
-    user_state[message.from_user.id] = {"step": "wait_post_media"}
-    await message.reply_text("Send post (Forward media: document/photo/video)")
+async def start_post(client, message):
+    USER_STATE[message.from_user.id] = {"step": "wait_post_media"}
+    await message.reply_text("Send post media")
 
 @Client.on_message(filters.user(ADMINS) & filters.private, group=1)
-async def handle_workflow(client: Client, message: Message):
+async def handle_workflow(client, message):
     user_id = message.from_user.id
-    if user_id not in user_state:
+    if user_id not in USER_STATE:
         return
 
-    state = user_state[user_id]
+    state = USER_STATE[user_id]
     step = state.get("step")
 
-    # STEP 1: Receiving the display post media
     if step == "wait_post_media" and message.media:
         state["post_msg_id"] = message.id
-        state["step"] = "wait_link_type"
-        await message.reply_text("Post successfully received.\nPlease provide `single link` or `batch link` (/link or /batch link)")
-        return
+        state["step"] = "wait_type"
+        await message.reply_text("Send /link or /batch")
 
-    # STEP 2: Asking type
-    if step == "wait_link_type":
-        if message.text in ["/link", "single link"]:
+    elif step == "wait_type":
+        if message.text == "/link":
             state["type"] = "single"
-            state["step"] = "wait_single_episode"
-            await message.reply_text("Send episode (Forward from database)")
-        elif message.text in ["/batch link", "batch link"]:
+            state["step"] = "wait_episode"
+            await message.reply_text("Send episode file")
+
+        elif message.text == "/batch":
             state["type"] = "batch"
-            state["step"] = "wait_batch_first"
+            state["step"] = "wait_start"
             await message.reply_text("Send first episode")
-        return
 
-    # STEP 3: Single Workflow
-    if state.get("type") == "single":
-        if step == "wait_single_episode" and message.media:
-            state["file_id"] = message.id # We store the message ID of the forwarded episode
-            state["step"] = "wait_single_number"
-            await message.reply_text("Enter Number (e.g. 07)")
-        
-        elif step == "wait_single_number":
+    elif state.get("type") == "single":
+        if step == "wait_episode" and message.media:
+            state["file_id"] = message.id
+            state["step"] = "wait_number"
+            await message.reply_text("Send episode number")
+
+        elif step == "wait_number":
             state["number"] = message.text
-            state["step"] = "wait_single_confirm"
-            await message.reply_text("Type /hmm to confirm")
-
-        elif step == "wait_single_confirm" and message.text == "/hmm":
-            post_id = add_post(state["file_id"], f"Watch episode {state['number']}", "single")
-            bot_info = await client.get_me()
-            link = f"https://t.me/{bot_info.username}?start=post_{post_id}"
+            post_id = await add_post(state["file_id"], f"Watch {state['number']}")
             
-            btn = InlineKeyboardMarkup([[InlineKeyboardButton(f"Watch episode {state['number']}", url=link)]])
-            await client.copy_message(user_id, user_id, state["post_msg_id"], reply_markup=btn)
-            await message.reply_text("Post ready 👇\n\n[ Send ]\n[ Send more channel ]")
-            del user_state[user_id]
+            bot = await client.get_me()
+            link = f"https://t.me/{bot.username}?start=post_{post_id}"
 
-    # STEP 4: Batch Workflow
+            btn = InlineKeyboardMarkup([[InlineKeyboardButton("Watch", url=link)]])
+
+            state["ready_btn"] = btn
+            state["step"] = "ready_to_send"
+
+            await message.reply_text("Post Ready ✅\nUse /send")
+
     elif state.get("type") == "batch":
-        if step == "wait_batch_first" and message.media:
-            state["start_id"] = message.id
-            state["step"] = "wait_batch_last"
-            await message.reply_text("Send next episode (Last Episode)")
+        if step == "wait_start" and message.media:
+            state["start"] = message.id
+            state["step"] = "wait_end"
+            await message.reply_text("Send last episode")
+
+        elif step == "wait_end" and message.media:
+            state["end"] = message.id
+            batch_id = await add_batch(state["start"], state["end"], "Batch")
             
-        elif step == "wait_batch_last" and message.media:
-            state["end_id"] = message.id
-            state["step"] = "wait_batch_range"
-            await message.reply_text("Batch successfully adding.\nEnter range (e.g. 05-15)")
-            
-        elif step == "wait_batch_range":
-            state["range"] = message.text
-            state["step"] = "wait_batch_confirm"
-            await message.reply_text("Type /hmm to confirm")
-            
-        elif step == "wait_batch_confirm" and message.text == "/hmm":
-            batch_id = add_batch(state["start_id"], state["end_id"], state["range"])
-            bot_info = await client.get_me()
-            link = f"https://t.me/{bot_info.username}?start=batch_{batch_id}"
-            
-            btn = InlineKeyboardMarkup([[InlineKeyboardButton(f"Watch episode {state['range']}", url=link)]])
-            await client.copy_message(user_id, user_id, state["post_msg_id"], reply_markup=btn)
-            await message.reply_text("Post ready 👇\n\n/send\n/send more channel")
-            del user_state[user_id]
+            bot = await client.get_me()
+            link = f"https://t.me/{bot.username}?start=batch_{batch_id}"
+
+            btn = InlineKeyboardMarkup([[InlineKeyboardButton("Watch Batch", url=link)]])
+
+            state["ready_btn"] = btn
+            state["step"] = "ready_to_send"
+
+            await message.reply_text("Batch Ready ✅\nUse /send")

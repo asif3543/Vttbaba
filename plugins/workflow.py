@@ -1,59 +1,74 @@
-from pyrogram import Client, filters, idle
-from pyrogram.errors import FloodWait
-from config import API_ID, API_HASH, BOT_TOKEN
-from aiohttp import web
-import asyncio, os, sys
-import uvloop
+from pyrogram import Client, filters
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from config import ADMINS, USER_STATE
+from database import add_post, add_batch
 
-# ⚡ FIXED EVENT LOOP (CRITICAL)
-uvloop.install()
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
+@Client.on_message(filters.command("post") & filters.user(ADMINS) & filters.private)
+async def start_post(client, message):
+    USER_STATE[message.from_user.id] = {"step": "wait_post_media"}
+    await message.reply_text("Send post media")
 
-app = Client(
-    "bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    plugins=dict(root="plugins")
-)
+@Client.on_message(filters.user(ADMINS) & filters.private, group=1)
+async def handle_workflow(client, message):
+    user_id = message.from_user.id
+    if user_id not in USER_STATE:
+        return
 
-@app.on_message(filters.command("ping"))
-async def ping_test(client, message):
-    await message.reply_text("✅ Pong! Bot is Alive!")
+    state = USER_STATE[user_id]
+    step = state.get("step")
 
-async def web_server():
-    webapp = web.Application()
-    webapp.router.add_get("/", lambda r: web.Response(text="Bot Running ✅"))
-    
-    runner = web.AppRunner(webapp)
-    await runner.setup()
-    
-    await web.TCPSite(
-        runner,
-        "0.0.0.0",
-        int(os.environ.get("PORT", 10000))
-    ).start()
+    if step == "wait_post_media" and message.media:
+        state["post_msg_id"] = message.id
+        state["step"] = "wait_type"
+        await message.reply_text("Send /link or /batch")
 
-async def main():
-    await web_server()
+    elif step == "wait_type":
+        if message.text == "/link":
+            state["type"] = "single"
+            state["step"] = "wait_episode"
+            await message.reply_text("Send episode file")
 
-    while True:
-        try:
-            await app.start()
-            bot_info = await app.get_me()
-            print(f"✅ Bot Started Successfully: @{bot_info.username}")
-            break
+        elif message.text == "/batch":
+            state["type"] = "batch"
+            state["step"] = "wait_start"
+            await message.reply_text("Send first episode")
 
-        except FloodWait as e:
-            await asyncio.sleep(e.value + 5)
+    elif state.get("type") == "single":
+        if step == "wait_episode" and message.media:
+            state["file_id"] = message.id
+            state["step"] = "wait_number"
+            await message.reply_text("Send episode number")
 
-        except Exception as e:
-            print(f"Startup Error: {e}")
-            sys.exit(1)
+        elif step == "wait_number":
+            state["number"] = message.text
+            post_id = await add_post(state["file_id"], f"Watch {state['number']}")
+            
+            bot = await client.get_me()
+            link = f"https://t.me/{bot.username}?start=post_{post_id}"
 
-    await idle()
-    await app.stop()
+            btn = InlineKeyboardMarkup([[InlineKeyboardButton("Watch", url=link)]])
 
-if __name__ == "__main__":
-    loop.run_until_complete(main())
+            state["ready_btn"] = btn
+            state["step"] = "ready_to_send"
+
+            await message.reply_text("Post Ready ✅\nUse /send")
+
+    elif state.get("type") == "batch":
+        if step == "wait_start" and message.media:
+            state["start"] = message.id
+            state["step"] = "wait_end"
+            await message.reply_text("Send last episode")
+
+        elif step == "wait_end" and message.media:
+            state["end"] = message.id
+            batch_id = await add_batch(state["start"], state["end"], "Batch")
+            
+            bot = await client.get_me()
+            link = f"https://t.me/{bot.username}?start=batch_{batch_id}"
+
+            btn = InlineKeyboardMarkup([[InlineKeyboardButton("Watch Batch", url=link)]])
+
+            state["ready_btn"] = btn
+            state["step"] = "ready_to_send"
+
+            await message.reply_text("Batch Ready ✅\nUse /send")

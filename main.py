@@ -5,7 +5,10 @@ from aiohttp import web
 import asyncio, os, sys
 import uvloop
 
+# ⚡ FIXED EVENT LOOP (CRITICAL)
 uvloop.install()
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
 app = Client(
     "bot",
@@ -53,4 +56,4 @@ async def main():
     await app.stop()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop.run_until_complete(main())

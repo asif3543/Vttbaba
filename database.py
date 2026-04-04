@@ -9,7 +9,7 @@ HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json",
-    "Prefer": "return=representation"
+    "Prefer": "return=representation,resolution=merge-duplicates"
 }
 BASE_URL = f"{SUPABASE_URL}/rest/v1"
 

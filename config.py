@@ -5,7 +5,7 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 PORT = int(os.getenv("PORT", 10000))
 
-# 🔥 Bina @ ke username
+# 🔥 BOT_USERNAME add kiya
 BOT_USERNAME = os.getenv("BOT_USERNAME", "Leechkun_bot")
 
 OWNER_ID = int(os.getenv("OWNER_ID", 5351848105))

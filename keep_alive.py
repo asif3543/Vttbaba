@@ -1,6 +1,10 @@
-FROM python:3.10-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-CMD ["python", "main.py"]
+from aiohttp import web
+
+async def handle(request):
+    return web.Response(text="Bot Alive")
+
+app = web.Application()
+app.router.add_get('/', handle)
+
+def run():
+    web.run_app(app, port=10000)

@@ -1,2 +1,5 @@
-pyrogram
-tgcrypto
+aiogram
+motor
+pymongo
+python-dotenv
+aiohttp

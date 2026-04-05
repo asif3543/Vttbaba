@@ -1,4 +1,4 @@
-from aiogram import Router, F
+from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
@@ -14,7 +14,8 @@ class PremiumState(StatesGroup):
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
-@router.message(Command("add premium"))
+# New command: /addpri
+@router.message(Command("addpri"))
 async def add_premium_cmd(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
@@ -38,9 +39,10 @@ async def confirm_premium(message: Message, state: FSMContext):
         await message.reply(f"✅ Premium confirmed for {data['premium_uid']} 🪄")
         await state.clear()
     else:
-        await message.reply("❌ No pending premium. Use /add premium first")
+        await message.reply("❌ No pending premium. Use /addpri first")
 
-@router.message(Command("remove premium"))
+# New command: /removepri
+@router.message(Command("removepri"))
 async def remove_premium_cmd(message: Message):
     if not is_admin(message.from_user.id):
         return
@@ -49,7 +51,7 @@ async def remove_premium_cmd(message: Message):
         await db.remove_premium(uid)
         await message.reply(f"✅ Removed premium and banned {uid}")
     except:
-        await message.reply("❌ Usage: /remove premium user_id")
+        await message.reply("❌ Usage: /removepri user_id")
 
 @router.message(Command("show premium list"))
 async def show_premium_cmd(message: Message):

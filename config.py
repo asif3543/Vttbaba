@@ -10,7 +10,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "Leechkun_bot")
 OWNER_ID = int(os.getenv("OWNER_ID", 5351848105))
 ALLOWED_USERS = [int(x) for x in os.getenv("ALLOWED_USERS", "5344078567").split(",")]
 
-STORAGE_CHANNEL_ID = int(os.getenv("STORAGE_CHANNEL_ID", -1003096528862))
+STORAGE_CHANNEL_ID = int(os.getenv("STORAGE_CHANNEL_ID", -1003629012882))
 
 MONGODB_URL = os.getenv("MONGODB_URL")
 DATABASE_NAME = os.getenv("DATABASE_NAME", "telegram_bot")

@@ -3,3 +3,4 @@ motor
 pymongo
 python-dotenv
 aiohttp
+pytz

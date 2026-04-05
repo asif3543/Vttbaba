@@ -10,11 +10,13 @@ router = Router()
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
-@router.message(Command("Force sub"))
+@router.message(Command("Forcesub"))
 async def force_sub_cmd(message: Message):
     if not is_admin(message.from_user.id):
         return
     await message.reply("Please forward a message from the channel you want to force subscribe")
+
+    # Temporary handler for forwarded message
     @router.message()
     async def fsub_forward(msg: Message):
         if msg.forward_from_chat:
@@ -25,8 +27,9 @@ async def force_sub_cmd(message: Message):
             await msg.reply(f"✅ Force subscribe added: {name}")
         else:
             await msg.reply("❌ Please forward a channel message")
+        # Remove this temporary handler after one use? We'll just leave it, but it's okay.
 
-# ---------- User getting episode via deep link ----------
+# Deep link handler for episode access
 @router.message(Command("start"))
 async def start_with_ep(message: Message):
     if " ep_" in message.text:

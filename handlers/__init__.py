@@ -5,7 +5,6 @@ from .shortner import router as shortner_router
 from .premium import router as premium_router
 from .forcesub import router as fsub_router
 
-# Merge all routers
 from aiogram import Router
 router = Router()
 router.include_router(start_router)

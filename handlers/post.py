@@ -1,4 +1,4 @@
-from aiogram import Router, F
+from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -20,27 +20,43 @@ def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
 
+# 🚀 START POST
 @router.message(Command("post"))
 async def post_cmd(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    await message.reply("📤 Send post (forward from any channel or user)")
+    await message.reply("📤 Send post (forward OR direct media)")
     await state.set_state(PostState.waiting_post)
 
 
+# 🔥 RECEIVE POST (FIXED)
 @router.message(PostState.waiting_post)
 async def receive_post(message: Message, state: FSMContext):
-    if message.forward_from_chat or message.forward_from:
-        stored = await message.bot.forward_message(
-            STORAGE_CHANNEL_ID, message.chat.id, message.message_id
-        )
-        await db.save_temp(message.from_user.id, {"storage_msg_id": stored.message_id})
-        await message.reply("✅ Post received. Send 'single link' or 'batch link'")
-        await state.set_state(PostState.waiting_link_type)
-    else:
-        await message.reply("❌ Please forward a post")
+    try:
+        # ✅ Accept ANY media (forward or direct)
+        if message.photo or message.video or message.document or message.animation:
+
+            stored = await message.bot.forward_message(
+                STORAGE_CHANNEL_ID,
+                message.chat.id,
+                message.message_id
+            )
+
+            await db.save_temp(message.from_user.id, {
+                "storage_msg_id": stored.message_id
+            })
+
+            await message.reply("✅ Post received. Send 'single link' or 'batch link'")
+            await state.set_state(PostState.waiting_link_type)
+
+        else:
+            await message.reply("❌ Please send photo/video/document")
+
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
 
 
+# 🔗 LINK TYPE
 @router.message(PostState.waiting_link_type)
 async def link_type(message: Message, state: FSMContext):
     text = message.text.lower()
@@ -52,10 +68,11 @@ async def link_type(message: Message, state: FSMContext):
         await state.set_state(PostState.waiting_batch_ep)
     else:
         await db.save_temp(message.from_user.id, {**temp, "type": "single"})
-        await message.reply("🎬 Send episode (just the number, e.g. 07)")
+        await message.reply("🎬 Send episode number (e.g. 07)")
         await state.set_state(PostState.waiting_single_ep)
 
 
+# 🎬 SINGLE EP
 @router.message(PostState.waiting_single_ep)
 async def single_ep(message: Message, state: FSMContext):
     ep = message.text.strip()
@@ -66,6 +83,7 @@ async def single_ep(message: Message, state: FSMContext):
     await state.clear()
 
 
+# 📚 BATCH EP
 @router.message(PostState.waiting_batch_ep)
 async def batch_ep(message: Message, state: FSMContext):
     temp = await db.get_temp(message.from_user.id)
@@ -85,9 +103,10 @@ async def batch_ep(message: Message, state: FSMContext):
         await state.set_state(PostState.waiting_batch_range)
 
     else:
-        await message.reply("❌ Forward an episode or type 'done'")
+        await message.reply("❌ Forward episode or type 'done'")
 
 
+# 🔢 BATCH RANGE
 @router.message(PostState.waiting_batch_range)
 async def batch_range(message: Message, state: FSMContext):
     rng = message.text.strip()
@@ -98,7 +117,7 @@ async def batch_range(message: Message, state: FSMContext):
     await state.clear()
 
 
-# 🔥 MAIN FIXED PART
+# 🔥 CONFIRM POST (FINAL FIXED)
 @router.message(Command("confirm"))
 @router.message(Command("hmm"))
 async def confirm_post(message: Message, state: FSMContext):
@@ -116,12 +135,12 @@ async def confirm_post(message: Message, state: FSMContext):
         episode_val = temp.get("episode", "1")
         btn_text = f"🎬 Watch Episode {episode_val}"
 
-    # 🔗 Original deep link
+    # 🔗 Deep link
     original_url = f"https://t.me/{BOT_USERNAME}?start=ep_{episode_val}"
 
-    # 🔥 MULTI SHORTNER + FAILOVER SYSTEM
+    # 🔥 MULTI SHORTNER SYSTEM
     shortners = await db.get_shortners()
-    short_url = original_url  # fallback
+    short_url = original_url
 
     if shortners:
         import random
@@ -146,7 +165,7 @@ async def confirm_post(message: Message, state: FSMContext):
         inline_keyboard=[[InlineKeyboardButton(text=btn_text, url=short_url)]]
     )
 
-    # 📤 Copy post
+    # 📤 Send preview to admin
     await message.bot.copy_message(
         message.chat.id,
         STORAGE_CHANNEL_ID,
@@ -154,7 +173,7 @@ async def confirm_post(message: Message, state: FSMContext):
         reply_markup=button
     )
 
-    # 💾 Save DB
+    # 💾 Save post
     await db.save_post({
         "storage_msg_id": temp["storage_msg_id"],
         "type": temp.get("type"),
@@ -169,6 +188,6 @@ async def confirm_post(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="📤 Send more channel", callback_data="send_multi")]
     ])
 
-    await message.reply("[ Send ]\n[ Send more channel ]", reply_markup=keyboard)
+    await message.reply("Choose option:", reply_markup=keyboard)
 
     await db.del_temp(message.from_user.id)

@@ -16,139 +16,156 @@ class ShortnerState(StatesGroup):
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
-
-# ✅ FULLY FIXED SHORTNER FUNCTION
-async def make_shortlink(shortner, url):
+# ---------- MAIN SHORTNER FUNCTION ----------
+async def make_shortlink(shortner: dict, original_url: str) -> str:
+    """
+    Tries to create a short link using the given shortner account.
+    Returns short URL if successful, else returns original_url.
+    """
+    api_url = shortner.get("url")
+    api_key = shortner.get("api")
+    
+    if not api_url or not api_key:
+        return original_url
+    
     try:
-        async with aiohttp.ClientSession() as s:
-
-            # ✅ 1. TRY GET (MOST IMPORTANT - Adlinkfly type APIs)
-            api_url = f"{shortner['url']}?api={shortner['api']}&url={url}"
-
-            async with s.get(api_url, timeout=10) as r:
-                if r.status == 200:
+        async with aiohttp.ClientSession() as session:
+            # Method 1: GET request (Adlinkfly & most common)
+            get_url = f"{api_url}?api={api_key}&url={original_url}"
+            async with session.get(get_url, timeout=10) as resp:
+                if resp.status == 200:
                     try:
-                        data = await r.json()
+                        data = await resp.json()
                     except:
-                        text = await r.text()
-                        print("Shortner TEXT:", text)
-                        return text.strip()
-
-                    print("Shortner GET:", data)
-
-                    return (
-                        data.get("shortenedUrl")
-                        or data.get("short_url")
-                        or data.get("link")
-                        or data.get("result")
-                        or data.get("short")
-                        or url
-                    )
-
-            # ✅ 2. TRY POST (form-data)
-            async with s.post(
-                shortner["url"],
-                data={"api": shortner["api"], "url": url},
-                timeout=10
-            ) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    print("Shortner POST:", data)
-
-                    return (
-                        data.get("shortenedUrl")
-                        or data.get("short_url")
-                        or data.get("link")
-                        or data.get("result")
-                        or data.get("short")
-                        or url
-                    )
-
-            # ✅ 3. TRY POST (JSON fallback)
-            async with s.post(
-                shortner["url"],
-                json={"api": shortner["api"], "url": url},
-                timeout=10
-            ) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    print("Shortner JSON:", data)
-
-                    return (
-                        data.get("shortenedUrl")
-                        or data.get("short_url")
-                        or data.get("link")
-                        or data.get("result")
-                        or data.get("short")
-                        or url
-                    )
-
+                        # Sometimes response is plain text (the short link)
+                        text = await resp.text()
+                        if text.startswith("http"):
+                            return text.strip()
+                        else:
+                            # Not a valid link, try next method
+                            pass
+                    else:
+                        # Common response keys
+                        short = (
+                            data.get("shortenedUrl") or
+                            data.get("short_url") or
+                            data.get("link") or
+                            data.get("result") or
+                            data.get("short") or
+                            None
+                        )
+                        if short and short.startswith("http"):
+                            return short
+            
+            # Method 2: POST with form data
+            async with session.post(api_url, data={"api": api_key, "url": original_url}, timeout=10) as resp:
+                if resp.status == 200:
+                    try:
+                        data = await resp.json()
+                    except:
+                        text = await resp.text()
+                        if text.startswith("http"):
+                            return text.strip()
+                    else:
+                        short = (
+                            data.get("shortenedUrl") or
+                            data.get("short_url") or
+                            data.get("link") or
+                            data.get("result") or
+                            data.get("short") or
+                            None
+                        )
+                        if short and short.startswith("http"):
+                            return short
+            
+            # Method 3: POST with JSON
+            async with session.post(api_url, json={"api": api_key, "url": original_url}, timeout=10) as resp:
+                if resp.status == 200:
+                    try:
+                        data = await resp.json()
+                    except:
+                        text = await resp.text()
+                        if text.startswith("http"):
+                            return text.strip()
+                    else:
+                        short = (
+                            data.get("shortenedUrl") or
+                            data.get("short_url") or
+                            data.get("link") or
+                            data.get("result") or
+                            data.get("short") or
+                            None
+                        )
+                        if short and short.startswith("http"):
+                            return short
     except Exception as e:
-        print("Shortner Error:", e)
+        print(f"Shortner error: {e}")
+    
+    # If all methods fail, return original URL
+    return original_url
 
-    return url
 
-
+# ---------- ADD SHORTNER ----------
 @router.message(Command("adshort"))
 async def add_shortner_cmd(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    await message.reply("🔗 Send API endpoint URL (not dashboard)")
+    await message.reply("🔗 Send API endpoint URL (e.g., https://your-shortener.com/api)")
     await state.set_state(ShortnerState.waiting_url)
-
 
 @router.message(ShortnerState.waiting_url)
 async def shortner_url(message: Message, state: FSMContext):
-    await state.update_data(url=message.text.strip())
-    await message.reply("🔑 Send API token")
+    url = message.text.strip()
+    if not url.startswith("http"):
+        await message.reply("❌ URL must start with http:// or https://")
+        return
+    await state.update_data(url=url)
+    await message.reply("🔑 Send API token/key")
     await state.set_state(ShortnerState.waiting_api)
-
 
 @router.message(ShortnerState.waiting_api)
 async def shortner_api(message: Message, state: FSMContext):
     data = await state.get_data()
-    await db.add_shortner(data["url"], message.text.strip())
-    await message.reply("✅ Shortner account added!")
+    api_key = message.text.strip()
+    await db.add_shortner(data["url"], api_key)
+    await message.reply("✅ Shortner account added successfully!")
     await state.clear()
 
 
+# ---------- REMOVE SHORTNER ----------
 @router.message(Command("removeshot"))
 async def remove_shortner_cmd(message: Message):
     if not is_admin(message.from_user.id):
         return
     shortners = await db.get_shortners()
     if not shortners:
-        await message.reply("❌ No shortner accounts")
+        await message.reply("❌ No shortner accounts found.")
         return
-
+    
     keyboard = []
     for s in shortners:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=s["url"],
-                callback_data=f"rem_{s['_id']}"
-            )
-        ])
-
+        # Show shortner URL as button text
+        btn_text = s["url"][:40] + "..." if len(s["url"]) > 40 else s["url"]
+        keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"rem_{s['_id']}")])
+    
     await message.reply(
-        "Select account to remove:",
+        "Select shortner account to remove:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
-
 
 @router.callback_query(F.data.startswith("rem_"))
 async def select_remove(callback: CallbackQuery, state: FSMContext):
     sid = callback.data.split("_")[1]
     await state.update_data(shortner_id=sid)
-    await callback.message.reply("Type /delete to confirm")
-
+    await callback.message.reply("Type /delete to confirm removal.")
+    await callback.answer()
 
 @router.message(Command("delete"))
 async def delete_shortner(message: Message, state: FSMContext):
     data = await state.get_data()
-    if data.get("shortner_id"):
-        await db.remove_shortner(data["shortner_id"])
-        await message.reply("✅ Shortner deleted")
-        await state.clear()
-    else:
-        await message.reply("❌ No shortner selected")
+    if not data.get("shortner_id"):
+        await message.reply("❌ No shortner selected. Use /removeshot first.")
+        return
+    await db.remove_shortner(data["shortner_id"])
+    await message.reply("✅ Shortner account deleted successfully.")
+    await state.clear()

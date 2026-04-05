@@ -14,7 +14,7 @@ class Database:
         self.posts = self.db.posts
         self.temp = self.db.temp
 
-    # Premium
+    # ---------- Premium ----------
     async def add_premium(self, user_id):
         expiry = datetime.utcnow() + timedelta(days=28)
         await self.users.update_one({"_id": user_id}, {"$set": {"premium": True, "expiry": expiry}}, upsert=True)
@@ -34,9 +34,9 @@ class Database:
     async def get_premium_list(self):
         return await self.users.find({"premium": True, "expiry": {"$gt": datetime.utcnow()}}).to_list(100)
 
-    # Shortner
+    # ---------- Shortner ----------
     async def add_shortner(self, url, api):
-        return await self.shortners.insert_one({"url": url, "api": api, "active": True}).inserted_id
+        return await self.shortners.insert_one({"url": url, "api": api, "active": True})
     async def remove_shortner(self, sid):
         await self.shortners.delete_one({"_id": sid})
     async def get_shortners(self):
@@ -45,19 +45,19 @@ class Database:
         s = await self.get_shortners()
         return random.choice(s) if s else None
 
-    # Channels
+    # ---------- Channels (for sending posts) ----------
     async def add_channel(self, cid, name):
         await self.channels.update_one({"_id": cid}, {"$set": {"name": name}}, upsert=True)
     async def get_channels(self):
         return await self.channels.find().to_list(100)
 
-    # Force Sub
+    # ---------- Force Sub ----------
     async def add_fsub(self, cid, name, link):
         await self.fsub.update_one({"_id": cid}, {"$set": {"name": name, "link": link}}, upsert=True)
     async def get_fsub(self):
         return await self.fsub.find().to_list(100)
 
-    # Temp post storage
+    # ---------- Temp storage for post creation ----------
     async def save_temp(self, uid, data):
         await self.temp.update_one({"_id": uid}, {"$set": data}, upsert=True)
     async def get_temp(self, uid):
@@ -65,7 +65,7 @@ class Database:
     async def del_temp(self, uid):
         await self.temp.delete_one({"_id": uid})
 
-    # Final post
+    # ---------- Final post storage ----------
     async def save_post(self, data):
         data["created_at"] = datetime.utcnow()
         return await self.posts.insert_one(data)

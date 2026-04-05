@@ -2,6 +2,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from config import MONGODB_URL, DATABASE_NAME
 from datetime import datetime, timedelta
 import random
+from bson.objectid import ObjectId
 
 class Database:
     def __init__(self):
@@ -14,7 +15,6 @@ class Database:
         self.channels = self.db.channels
         self.fsub_channels = self.db.fsub_channels
         self.posts = self.db.posts
-        self.temp_posts = self.db.temp_posts
     
     # ==================== USER PREMIUM SYSTEM ====================
     async def add_premium(self, user_id: int):
@@ -29,7 +29,8 @@ class Database:
     async def remove_premium(self, user_id: int):
         await self.users.update_one(
             {"_id": user_id},
-            {"$set": {"premium": False, "banned": True}}
+            {"$set": {"premium": False, "banned": True}},
+            upsert=True
         )
     
     async def is_premium(self, user_id: int) -> bool:
@@ -60,7 +61,7 @@ class Database:
         return str(result.inserted_id)
     
     async def remove_shortner(self, shortner_id: str):
-        await self.shortners.delete_one({"_id": shortner_id})
+        await self.shortners.delete_one({"_id": ObjectId(shortner_id)})
     
     async def get_shortners(self):
         cursor = self.shortners.find({"active": True})
@@ -100,66 +101,15 @@ class Database:
     async def remove_fsub_channel(self, channel_id: int):
         await self.fsub_channels.delete_one({"_id": channel_id})
     
-    # ==================== TEMP POST STORAGE (during creation) ====================
-    async def save_temp_post(self, user_id: int, data: dict):
-        await self.temp_posts.update_one(
-            {"user_id": user_id},
-            {"$set": data},
-            upsert=True
-        )
-    
-    async def get_temp_post(self, user_id: int):
-        return await self.temp_posts.find_one({"user_id": user_id})
-    
-    async def delete_temp_post(self, user_id: int):
-        await self.temp_posts.delete_one({"user_id": user_id})
-    
     # ==================== FINAL POST STORAGE ====================
     async def save_post(self, post_data: dict):
-        post_data["created_at"] = datetime.utcnow()
         result = await self.posts.insert_one(post_data)
         return str(result.inserted_id)
     
     async def get_latest_post(self):
         return await self.posts.find_one(sort=[("created_at", -1)])
     
-    async def get_post_by_episode(self, episode: str):
-        # Check single episode
-        post = await self.posts.find_one({"episode": episode})
-        if post:
-            return post
-        
-        # Check batch range
-        all_posts = await self.posts.find({"batch_range": {"$exists": True}}).to_list(length=100)
-        for post in all_posts:
-            batch_range = post.get("batch_range", "")
-            if "-" in batch_range:
-                try:
-                    start, end = batch_range.split("-")
-                    if int(start) <= int(episode) <= int(end):
-                        return post
-                except:
-                    pass
-        return None
-    
-    # ==================== ADD THIS MISSING FUNCTION ====================
-    async def get_post_by_episode(self, episode: str):
-        """Get post by episode number (supports batch ranges)"""
-        # Check exact episode match
-        post = await self.posts.find_one({"episode": episode})
-        if post:
-            return post
-        
-        # Check batch range
-        async for post in self.posts.find({"batch_range": {"$exists": True}}):
-            range_str = post.get("batch_range", "")
-            if "-" in range_str:
-                try:
-                    start, end = range_str.split("-")
-                    if int(start) <= int(episode) <= int(end):
-                        return post
-                except:
-                    pass
-        return None
+    async def get_post_by_episode(self, episode_label: str):
+        return await self.posts.find_one({"episode_label": episode_label})
 
 db = Database()

@@ -16,45 +16,67 @@ class ShortnerState(StatesGroup):
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
-# ✅ FIXED FUNCTION
+
+# ✅ FULLY FIXED SHORTNER FUNCTION
 async def make_shortlink(shortner, url):
     try:
         async with aiohttp.ClientSession() as s:
 
-            # 👉 First try with form-data (most APIs support this)
-            async with s.post(
-                shortner["url"],
-                data={"api": shortner["api"], "url": url},
-                timeout=10
-            ) as r:
+            # ✅ 1. TRY GET (MOST IMPORTANT - Adlinkfly type APIs)
+            api_url = f"{shortner['url']}?api={shortner['api']}&url={url}"
 
+            async with s.get(api_url, timeout=10) as r:
                 if r.status == 200:
-                    data = await r.json()
-                    print("Shortner Response:", data)
+                    try:
+                        data = await r.json()
+                    except:
+                        text = await r.text()
+                        print("Shortner TEXT:", text)
+                        return text.strip()
+
+                    print("Shortner GET:", data)
 
                     return (
-                        data.get("short_url")
-                        or data.get("shortened_url")
+                        data.get("shortenedUrl")
+                        or data.get("short_url")
                         or data.get("link")
                         or data.get("result")
                         or data.get("short")
                         or url
                     )
 
-            # 👉 Fallback: try JSON if above fails
+            # ✅ 2. TRY POST (form-data)
+            async with s.post(
+                shortner["url"],
+                data={"api": shortner["api"], "url": url},
+                timeout=10
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    print("Shortner POST:", data)
+
+                    return (
+                        data.get("shortenedUrl")
+                        or data.get("short_url")
+                        or data.get("link")
+                        or data.get("result")
+                        or data.get("short")
+                        or url
+                    )
+
+            # ✅ 3. TRY POST (JSON fallback)
             async with s.post(
                 shortner["url"],
                 json={"api": shortner["api"], "url": url},
                 timeout=10
             ) as r:
-
                 if r.status == 200:
                     data = await r.json()
-                    print("Shortner JSON Response:", data)
+                    print("Shortner JSON:", data)
 
                     return (
-                        data.get("short_url")
-                        or data.get("shortened_url")
+                        data.get("shortenedUrl")
+                        or data.get("short_url")
                         or data.get("link")
                         or data.get("result")
                         or data.get("short")

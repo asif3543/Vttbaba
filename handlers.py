@@ -50,7 +50,6 @@ async def create_shortlink(shortner: dict, original_url: str) -> str:
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    # Common response formats
                     return data.get("short_url") or data.get("shortened_url") or data.get("shortlink") or original_url
     except Exception as e:
         print(f"Shortner failed: {e}")
@@ -111,7 +110,6 @@ async def send_episode_to_user(message: Message, user_id: int, episode: str):
             f"After solving, you'll get the episode automatically."
         )
     else:
-        # No shortner account - direct link
         await message.reply(
             f"🎬 Click below to get episode:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -125,13 +123,11 @@ async def start_cmd(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     
-    # Deep link - user clicked on button
     if len(args) > 1 and args[1].startswith("episode_"):
         episode = args[1].replace("episode_", "")
         await send_episode_to_user(message, user_id, episode)
         return
     
-    # Normal start
     await message.reply(
         "🤖 Bot is alive!\n\n"
         "📌 **Admin Commands:**\n"
@@ -227,7 +223,6 @@ async def confirm_post(message: Message, state: FSMContext):
         await message.reply("❌ No pending post. Use /post first.")
         return
     
-    # Generate shortner link for button
     shortner = await db.get_random_shortner()
     shortner_link = None
     
@@ -245,12 +240,10 @@ async def confirm_post(message: Message, state: FSMContext):
     else:
         shortner_link = original_url
     
-    # Create button
     button = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=btn_text, url=shortner_link)]
     ])
     
-    # Send post with button
     await message.bot.copy_message(
         message.chat.id,
         STORAGE_CHANNEL_ID,
@@ -258,7 +251,6 @@ async def confirm_post(message: Message, state: FSMContext):
         reply_markup=button
     )
     
-    # Save post to database
     await db.save_post({
         "user_id": message.from_user.id,
         "storage_msg_id": temp["storage_msg_id"],
@@ -269,7 +261,6 @@ async def confirm_post(message: Message, state: FSMContext):
         "created_at": datetime.utcnow()
     })
     
-    # Show send options
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Send", callback_data="send_single")],
         [InlineKeyboardButton(text="📤 Send more channel", callback_data="send_multi")]
@@ -335,7 +326,6 @@ async def multi_select_channel(callback: CallbackQuery):
         multi_selected[user_id].append(channel_id)
         await callback.answer("Added")
     
-    # Refresh keyboard
     channels = await db.get_channels()
     keyboard = []
     for ch in channels:
@@ -367,7 +357,6 @@ async def confirm_send(message: Message):
         await message.reply("❌ No post found to send. Create a post first with /post")
         return
     
-    # Single channel send
     if temp.get("send_type") == "single" and temp.get("pending_channel"):
         try:
             await message.bot.copy_message(
@@ -380,7 +369,6 @@ async def confirm_send(message: Message):
         except Exception as e:
             await message.reply(f"❌ Failed: {e}")
     
-    # Multiple channels send
     elif temp.get("send_type") == "multi" and temp.get("pending_channels"):
         success = 0
         failed = 0
@@ -402,7 +390,6 @@ async def confirm_send(message: Message):
     else:
         await message.reply("❌ No channel selected. Use /send or /send more channel first.")
     
-    # Clean up
     await db.delete_temp_post(message.from_user.id)
     if message.from_user.id in multi_selected:
         del multi_selected[message.from_user.id]
@@ -412,14 +399,29 @@ async def confirm_send(message: Message):
 async def send_cmd(message: Message):
     if not is_admin(message.from_user.id):
         return
-    await send_single_option(message)  # Reuse same logic
+    channels = await db.get_channels()
+    if not channels:
+        await message.reply("❌ No channels found! Make sure bot is admin in channels and added to database.")
+        return
+    keyboard = []
+    for ch in channels:
+        keyboard.append([InlineKeyboardButton(text=ch["name"], callback_data=f"single_{ch['_id']}")])
+    await message.reply("📢 Select channel:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 # ==================== /send more channel COMMAND ====================
 @router.message(Command("send more channel"))
 async def send_more_cmd(message: Message):
     if not is_admin(message.from_user.id):
         return
-    await send_multi_option(message)  # Reuse same logic
+    channels = await db.get_channels()
+    if not channels:
+        await message.reply("❌ No channels found! Make sure bot is admin in channels and added to database.")
+        return
+    keyboard = []
+    for ch in channels:
+        keyboard.append([InlineKeyboardButton(text=f"☐ {ch['name']}", callback_data=f"multi_{ch['_id']}")])
+    keyboard.append([InlineKeyboardButton(text="✅ Done", callback_data="multi_done")])
+    await message.reply("Select channels (tap to select, then Done):", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 # ==================== SHORTNER ACCOUNT ====================
 @router.message(Command("add shortner account"))

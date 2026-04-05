@@ -27,7 +27,6 @@ async def make_shortlink(shortner, url):
         pass
     return url
 
-# New command: /adshort
 @router.message(Command("adshort"))
 async def add_shortner_cmd(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -48,7 +47,6 @@ async def shortner_api(message: Message, state: FSMContext):
     await message.reply("✅ Shortner account added!")
     await state.clear()
 
-# New command: /removeshot
 @router.message(Command("removeshot"))
 async def remove_shortner_cmd(message: Message):
     if not is_admin(message.from_user.id):

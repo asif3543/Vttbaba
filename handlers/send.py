@@ -24,7 +24,7 @@ async def send_command(message: Message):
         keyboard.append([InlineKeyboardButton(text=ch["name"], callback_data=f"single_{ch['_id']}")])
     await message.reply("📢 Select channel:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
-@router.message(Command("send more channel"))
+@router.message(Command("sendmorechannel"))
 async def send_more_command(message: Message):
     if not is_admin(message.from_user.id):
         return

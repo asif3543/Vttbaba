@@ -116,6 +116,7 @@ class Database:
     
     # ==================== FINAL POST STORAGE ====================
     async def save_post(self, post_data: dict):
+        post_data["created_at"] = datetime.utcnow()
         result = await self.posts.insert_one(post_data)
         return str(result.inserted_id)
     
@@ -135,6 +136,26 @@ class Database:
             if "-" in batch_range:
                 try:
                     start, end = batch_range.split("-")
+                    if int(start) <= int(episode) <= int(end):
+                        return post
+                except:
+                    pass
+        return None
+    
+    # ==================== ADD THIS MISSING FUNCTION ====================
+    async def get_post_by_episode(self, episode: str):
+        """Get post by episode number (supports batch ranges)"""
+        # Check exact episode match
+        post = await self.posts.find_one({"episode": episode})
+        if post:
+            return post
+        
+        # Check batch range
+        async for post in self.posts.find({"batch_range": {"$exists": True}}):
+            range_str = post.get("batch_range", "")
+            if "-" in range_str:
+                try:
+                    start, end = range_str.split("-")
                     if int(start) <= int(episode) <= int(end):
                         return post
                 except:

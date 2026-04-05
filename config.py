@@ -5,7 +5,6 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 PORT = int(os.getenv("PORT", 10000))
 
-# 🔥 BOT_USERNAME add kiya
 BOT_USERNAME = os.getenv("BOT_USERNAME", "Leechkun_bot")
 
 OWNER_ID = int(os.getenv("OWNER_ID", 5351848105))
@@ -14,4 +13,4 @@ ALLOWED_USERS = [int(x) for x in os.getenv("ALLOWED_USERS", "5344078567").split(
 STORAGE_CHANNEL_ID = int(os.getenv("STORAGE_CHANNEL_ID", -1003096528862))
 
 MONGODB_URL = os.getenv("MONGODB_URL")
-DATABASE_NAME = os.getenv("DATABASE_NAME", "telegram_bot")
+DATABASE_NAME = os.getenv("DATABASE_NAME", "Leechkun_bot")

@@ -2,7 +2,6 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 from config import OWNER_ID, ALLOWED_USERS
-from database import db
 
 router = Router()
 

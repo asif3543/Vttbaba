@@ -45,7 +45,7 @@ class Database:
         s = await self.get_shortners()
         return random.choice(s) if s else None
 
-    # ---------- Channels (for sending posts) ----------
+    # ---------- Channels ----------
     async def add_channel(self, cid, name):
         await self.channels.update_one({"_id": cid}, {"$set": {"name": name}}, upsert=True)
     async def get_channels(self):
@@ -57,7 +57,7 @@ class Database:
     async def get_fsub(self):
         return await self.fsub.find().to_list(100)
 
-    # ---------- Temp storage for post creation ----------
+    # ---------- Temp storage ----------
     async def save_temp(self, uid, data):
         await self.temp.update_one({"_id": uid}, {"$set": data}, upsert=True)
     async def get_temp(self, uid):
@@ -65,7 +65,7 @@ class Database:
     async def del_temp(self, uid):
         await self.temp.delete_one({"_id": uid})
 
-    # ---------- Final post storage ----------
+    # ---------- Final post ----------
     async def save_post(self, data):
         data["created_at"] = datetime.utcnow()
         return await self.posts.insert_one(data)

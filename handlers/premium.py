@@ -14,7 +14,6 @@ class PremiumState(StatesGroup):
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
-# New command: /addpri
 @router.message(Command("addpri"))
 async def add_premium_cmd(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -27,12 +26,12 @@ async def premium_id(message: Message, state: FSMContext):
     try:
         uid = int(message.text.strip())
         expiry = await db.add_premium(uid)
-        await message.reply(f"✅ Premium added to {uid}\nValid until {expiry.strftime('%Y-%m-%d')}\nType /hu hu to confirm")
+        await message.reply(f"✅ Premium added to {uid}\nValid until {expiry.strftime('%Y-%m-%d')}\nType /huhu to confirm")
         await state.update_data(premium_uid=uid)
     except:
         await message.reply("❌ Invalid user ID")
 
-@router.message(Command("hu hu"))
+@router.message(Command("huhu"))
 async def confirm_premium(message: Message, state: FSMContext):
     data = await state.get_data()
     if data.get("premium_uid"):
@@ -41,7 +40,6 @@ async def confirm_premium(message: Message, state: FSMContext):
     else:
         await message.reply("❌ No pending premium. Use /addpri first")
 
-# New command: /removepri
 @router.message(Command("removepri"))
 async def remove_premium_cmd(message: Message):
     if not is_admin(message.from_user.id):
@@ -53,7 +51,7 @@ async def remove_premium_cmd(message: Message):
     except:
         await message.reply("❌ Usage: /removepri user_id")
 
-@router.message(Command("show premium list"))
+@router.message(Command("showpremiumlist"))
 async def show_premium_cmd(message: Message):
     if not is_admin(message.from_user.id):
         return

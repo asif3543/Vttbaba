@@ -1,7 +1,8 @@
 import aiohttp
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
 from aiogram.filters import Command
+from aiogram.filters.chat_member_updated import ChatMemberUpdatedFilter, MEMBER, ADMINISTRATOR, IS_NOT_MEMBER
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from config import OWNER_ID, ALLOWED_USERS, STORAGE_CHANNEL_ID, BOT_USERNAME
@@ -10,16 +11,13 @@ from datetime import datetime
 
 router = Router()
 
-# Store multi-selected channels temporarily
-multi_selected = {}
-
 # ==================== STATES ====================
 class PostState(StatesGroup):
     waiting_post = State()
     waiting_link_type = State()
-    waiting_single_episode = State()
-    waiting_batch_episode = State()
-    waiting_batch_range = State()
+    waiting_episode = State()
+    waiting_number = State()
+    waiting_hmm = State()
 
 class ShortnerAddState(StatesGroup):
     waiting_url = State()
@@ -38,50 +36,53 @@ class FSUBState(StatesGroup):
 def is_admin(user_id: int) -> bool:
     return user_id == OWNER_ID or user_id in ALLOWED_USERS
 
-# ==================== SHORTNER API CALL ====================
+# ==================== AUTO ADMIN DETECT ====================
+# Tracks channels where bot gets added/removed as admin to populate the list
+@router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER >> ADMINISTRATOR))
+async def bot_added_as_admin(event: ChatMemberUpdated):
+    if event.chat.type == "channel":
+        await db.add_channel(event.chat.id, event.chat.title)
+
+@router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=ADMINISTRATOR >> IS_NOT_MEMBER))
+async def bot_removed_as_admin(event: ChatMemberUpdated):
+    if event.chat.type == "channel":
+        await db.remove_channel(event.chat.id)
+
+# ==================== SHORTNER API ====================
 async def create_shortlink(shortner: dict, original_url: str) -> str:
-    """Generate short link using shortner API"""
+    """Generate short link via API GET format"""
+    api_url = f"{shortner['url']}/api?api={shortner['api']}&url={original_url}"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                shortner["url"],
-                json={"api": shortner["api"], "url": original_url},
-                timeout=10
-            ) as resp:
+            async with session.get(api_url, timeout=10) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return data.get("short_url") or data.get("shortened_url") or data.get("shortlink") or original_url
+                    return data.get("shortenedUrl") or data.get("short_url") or original_url
     except Exception as e:
-        print(f"Shortner failed: {e}")
+        print(f"Shortner error: {e}")
     return original_url
 
-# ==================== SEND EPISODE TO USER ====================
-async def send_episode_to_user(message: Message, user_id: int, episode: str):
-    # Check if banned
-    if await db.is_banned(user_id):
-        await message.reply("❌ You are banned from using this bot.")
+# ==================== FILE DELIVERY SYSTEM ====================
+async def send_files(bot, user_id: int, episode_label: str, message_to_reply=None):
+    post = await db.get_post_by_episode(episode_label)
+    if not post:
+        if message_to_reply: await message_to_reply.reply("❌ Episode not found in Database.")
         return
-    
-    # Check premium
-    if await db.is_premium(user_id):
-        post = await db.get_post_by_episode(episode)
-        if post:
-            await message.bot.copy_message(
-                user_id,
-                STORAGE_CHANNEL_ID,
-                post["storage_msg_id"]
-            )
-        else:
-            await message.reply("❌ Episode not found.")
-        return
-    
-    # Check force subscribe for free users
+        
+    for file_msg_id in post.get("file_msg_ids", []):
+        try:
+            await bot.copy_message(user_id, STORAGE_CHANNEL_ID, file_msg_id)
+        except Exception:
+            pass
+
+async def verify_and_send_episode(bot, user_id: int, episode_label: str, message: Message):
+    # Check force subscribe
     fsub_channels = await db.get_fsub_channels()
     not_joined = []
     
     for channel in fsub_channels:
         try:
-            member = await message.bot.get_chat_member(channel["_id"], user_id)
+            member = await bot.get_chat_member(channel["_id"], user_id)
             if member.status not in ["member", "administrator", "creator"]:
                 not_joined.append(channel)
         except:
@@ -91,31 +92,16 @@ async def send_episode_to_user(message: Message, user_id: int, episode: str):
         keyboard = []
         for ch in not_joined:
             keyboard.append([InlineKeyboardButton(text=f"📢 Join {ch['name']}", url=ch["link"])])
-        keyboard.append([InlineKeyboardButton(text="✅ Try Again", callback_data=f"retry_{episode}")])
+        keyboard.append([InlineKeyboardButton(text="✅ Try Again", callback_data=f"retry_{episode_label}")])
         
         await message.reply(
-            "❌ Join channels first to access episodes:",
+            "join first",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
         )
         return
-    
-    # Free user - send shortner link
-    shortner = await db.get_random_shortner()
-    if shortner:
-        original_url = f"https://t.me/{BOT_USERNAME}?start=episode_{episode}"
-        short_url = await create_shortlink(shortner, original_url)
         
-        await message.reply(
-            f"🔗 Please solve the shortner to get episode:\n{short_url}\n\n"
-            f"After solving, you'll get the episode automatically."
-        )
-    else:
-        await message.reply(
-            f"🎬 Click below to get episode:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Get Episode", url=f"https://t.me/{BOT_USERNAME}?start=episode_{episode}")]
-            ])
-        )
+    # Free users that have passed shortner and FSub
+    await send_files(bot, user_id, episode_label, message)
 
 # ==================== /start ====================
 @router.message(Command("start"))
@@ -123,442 +109,284 @@ async def start_cmd(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     
-    if len(args) > 1 and args[1].startswith("episode_"):
-        episode = args[1].replace("episode_", "")
-        await send_episode_to_user(message, user_id, episode)
-        return
-    
-    await message.reply(
-        "🤖 Bot is alive!\n\n"
-        "📌 **Admin Commands:**\n"
-        "/post - Upload new post\n"
-        "/add shortner account - Add shortner account\n"
-        "/remove shortner account - Remove shortner\n"
-        "/add premium - Add premium user (28 days)\n"
-        "/remove premium - Remove premium user\n"
-        "/show premium list - Show all premium users\n"
-        "/Force sub - Add force subscribe channel\n"
-        "/send - Send post to single channel\n"
-        "/send more channel - Send post to multiple channels\n\n"
-        "📌 **Premium Users:** Direct episode access without shortner\n"
-        "📌 **Free Users:** Solve shortner → Join channels → Get episode"
-    )
+    if len(args) > 1:
+        param = args[1]
+        
+        # When user clicks button on channel post
+        if param.startswith("episode_"):
+            episode_label = param.replace("episode_", "")
+            
+            if await db.is_banned(user_id):
+                await message.reply("❌ You are banned.")
+                return
+                
+            # If Premium -> bypass shortner & directly verify fsub/send files
+            if await db.is_premium(user_id):
+                await verify_and_send_episode(message.bot, user_id, episode_label, message)
+                return
+                
+            # Free user -> generate shortlink
+            shortner = await db.get_random_shortner()
+            if shortner:
+                verify_link = f"https://t.me/{BOT_USERNAME}?start=verify_{episode_label}"
+                short_url = await create_shortlink(shortner, verify_link)
+                await message.reply(f"🔗 Please solve the shortner to get episode:\n{short_url}\n\nAfter solving, you'll get the episode automatically.")
+            else:
+                # No shortner configured -> directly to verify
+                await verify_and_send_episode(message.bot, user_id, episode_label, message)
+            return
+            
+        # When user comes back after solving shortner
+        elif param.startswith("verify_"):
+            episode_label = param.replace("verify_", "")
+            await verify_and_send_episode(message.bot, user_id, episode_label, message)
+            return
 
-# ==================== /post ====================
+    await message.reply("🤖 Bot is alive!")
+
+@router.callback_query(F.data.startswith("retry_"))
+async def retry_fsub(callback: CallbackQuery):
+    episode_label = callback.data.replace("retry_", "")
+    await callback.message.delete()
+    await verify_and_send_episode(callback.bot, callback.from_user.id, episode_label, callback.message)
+
+# ==================== POST SYSTEM ====================
 @router.message(Command("post"))
 async def post_cmd(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.reply("❌ Only admin can use this command.")
-        return
-    await message.reply("📤 Send post")
+    if not is_admin(message.from_user.id): return
+    await message.reply("send post")
     await state.set_state(PostState.waiting_post)
 
 @router.message(PostState.waiting_post)
 async def receive_post(message: Message, state: FSMContext):
-    if message.forward_from_chat or message.forward_from:
-        stored = await message.bot.forward_message(STORAGE_CHANNEL_ID, message.chat.id, message.message_id)
-        await db.save_temp_post(message.from_user.id, {
-            "storage_msg_id": stored.message_id,
-            "step": "post_received"
-        })
-        await message.reply("✅ Post successfully received\nPlease provide single link or batch link")
-        await state.set_state(PostState.waiting_link_type)
-    else:
-        await message.reply("❌ Please forward a post from a channel or user")
+    stored = await message.bot.copy_message(STORAGE_CHANNEL_ID, message.chat.id, message.message_id)
+    await state.update_data(main_msg_id=stored.message_id)
+    await message.reply("post successfully received \nPlease provide single link or batch link")
+    await state.set_state(PostState.waiting_link_type)
 
-@router.message(PostState.waiting_link_type)
+@router.message(PostState.waiting_link_type, F.text.lower().in_(["single link", "batch link"]))
 async def receive_link_type(message: Message, state: FSMContext):
-    text = message.text.lower()
-    temp = await db.get_temp_post(message.from_user.id)
+    is_batch = "batch" in message.text.lower()
+    await state.update_data(link_type="batch" if is_batch else "single", file_msg_ids=[])
+    await message.reply("send episode")
+    await state.set_state(PostState.waiting_episode)
+
+@router.message(PostState.waiting_episode)
+async def receive_episode(message: Message, state: FSMContext):
+    data = await state.get_data()
     
-    if "batch" in text:
-        await db.save_temp_post(message.from_user.id, {**temp, "link_type": "batch"})
-        await message.reply("📚 Send episode")
-        await state.set_state(PostState.waiting_batch_episode)
-    else:
-        await db.save_temp_post(message.from_user.id, {**temp, "link_type": "single"})
-        await message.reply("🎬 Send episode")
-        await state.set_state(PostState.waiting_single_episode)
-
-@router.message(PostState.waiting_single_episode)
-async def receive_single_episode(message: Message, state: FSMContext):
-    episode = message.text.strip()
-    temp = await db.get_temp_post(message.from_user.id)
-    await db.save_temp_post(message.from_user.id, {**temp, "episode": episode})
-    await message.reply(f"✅ Episode {episode}\n/confirm")
-    await state.clear()
-
-@router.message(PostState.waiting_batch_episode)
-async def receive_batch_episode(message: Message, state: FSMContext):
-    temp = await db.get_temp_post(message.from_user.id)
-    episodes = temp.get("batch_episodes", [])
-    
-    if message.forward_from_chat or message.forward_from:
-        episodes.append(message.message_id)
-        await db.save_temp_post(message.from_user.id, {**temp, "batch_episodes": episodes})
-        await message.reply(f"✅ Episode {len(episodes)} received\nSend next episode or type 'done'")
-    elif message.text and message.text.lower() == "done":
-        if len(episodes) < 2:
-            await message.reply("❌ Need at least 2 episodes! Send more.")
-            return
-        await message.reply("✅ Batch successfully adding\nEnter number range (example: 05-15)")
-        await state.set_state(PostState.waiting_batch_range)
-    else:
-        await message.reply("❌ Please forward an episode message")
-
-@router.message(PostState.waiting_batch_range)
-async def receive_batch_range(message: Message, state: FSMContext):
-    ep_range = message.text.strip()
-    temp = await db.get_temp_post(message.from_user.id)
-    await db.save_temp_post(message.from_user.id, {**temp, "batch_range": ep_range})
-    await message.reply(f"✅ Range: {ep_range}\n/confirm")
-    await state.clear()
-
-# ==================== /confirm & /hmm ====================
-@router.message(Command("confirm"))
-@router.message(Command("hmm"))
-async def confirm_post(message: Message, state: FSMContext):
-    temp = await db.get_temp_post(message.from_user.id)
-    if not temp:
-        await message.reply("❌ No pending post. Use /post first.")
+    if data["link_type"] == "batch" and message.text and message.text.lower() == "done":
+        await message.reply("batch successfully adding\nEnter number (example: 05-15)")
+        await state.set_state(PostState.waiting_number)
         return
+        
+    stored = await message.bot.copy_message(STORAGE_CHANNEL_ID, message.chat.id, message.message_id)
+    file_msg_ids = data.get("file_msg_ids", [])
+    file_msg_ids.append(stored.message_id)
+    await state.update_data(file_msg_ids=file_msg_ids)
     
-    shortner = await db.get_random_shortner()
-    shortner_link = None
-    
-    if temp.get("link_type") == "batch":
-        episode_value = temp.get("batch_range", "1")
-        btn_text = f"🎬 Watch Episode {episode_value}"
+    if data["link_type"] == "single":
+        await message.reply("Enter Number")
+        await state.set_state(PostState.waiting_number)
     else:
-        episode_value = temp.get("episode", "1")
-        btn_text = f"🎬 Watch Episode {episode_value}"
+        await message.reply("send next episode\n(Or type 'done')")
+
+@router.message(PostState.waiting_number)
+async def receive_number(message: Message, state: FSMContext):
+    await state.update_data(episode_label=message.text.strip())
+    await message.reply("/confirm")
+    await state.set_state(PostState.waiting_hmm)
+
+@router.message(PostState.waiting_hmm, F.text.lower() == "/hmm")
+async def confirm_hmm(message: Message, state: FSMContext):
+    data = await state.get_data()
+    episode_label = data["episode_label"]
+    main_msg_id = data["main_msg_id"]
     
-    original_url = f"https://t.me/{BOT_USERNAME}?start=episode_{episode_value}"
+    btn_text = f"Watch Episode {episode_label}"
+    deep_link = f"https://t.me/{BOT_USERNAME}?start=episode_{episode_label}"
+    button = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=btn_text, url=deep_link)]])
     
-    if shortner:
-        shortner_link = await create_shortlink(shortner, original_url)
-    else:
-        shortner_link = original_url
+    # Add markup to storage message
+    await message.bot.edit_message_reply_markup(chat_id=STORAGE_CHANNEL_ID, message_id=main_msg_id, reply_markup=button)
     
-    button = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=btn_text, url=shortner_link)]
-    ])
-    
-    await message.bot.copy_message(
-        message.chat.id,
-        STORAGE_CHANNEL_ID,
-        temp["storage_msg_id"],
-        reply_markup=button
-    )
-    
+    # Save post
     await db.save_post({
-        "user_id": message.from_user.id,
-        "storage_msg_id": temp["storage_msg_id"],
-        "link_type": temp.get("link_type"),
-        "episode": temp.get("episode"),
-        "batch_range": temp.get("batch_range"),
-        "shortner_link": shortner_link,
+        "episode_label": episode_label,
+        "main_msg_id": main_msg_id,
+        "file_msg_ids": data["file_msg_ids"],
         "created_at": datetime.utcnow()
     })
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Send", callback_data="send_single")],
-        [InlineKeyboardButton(text="📤 Send more channel", callback_data="send_multi")]
-    ])
-    await message.reply("[ Send ]\n[ Send more channel]", reply_markup=keyboard)
-    await db.delete_temp_post(message.from_user.id)
+    # Send preview and options
+    await message.bot.copy_message(message.chat.id, STORAGE_CHANNEL_ID, main_msg_id, reply_markup=button)
+    await message.reply("[ Send ]\n[ Send more channel]")
+    await state.clear()
 
-# ==================== SEND TO SINGLE CHANNEL ====================
-@router.callback_query(F.data == "send_single")
-async def send_single_option(callback: CallbackQuery):
+# ==================== SEND CHANNELS ====================
+@router.message(F.text.lower() == "/send")
+async def send_cmd(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
     channels = await db.get_channels()
-    
     if not channels:
-        await callback.message.reply("❌ Bot is not admin in any channel! Add channels to database first.")
+        await message.reply("❌ Bot is not admin in any channel!")
         return
-    
-    keyboard = []
-    for ch in channels:
-        keyboard.append([InlineKeyboardButton(text=ch["name"], callback_data=f"single_{ch['_id']}")])
-    
-    await callback.message.reply(
-        "📢 Select channel to send:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
+        
+    keyboard = [[InlineKeyboardButton(text=ch["name"], callback_data=f"single_{ch['_id']}")] for ch in channels]
+    await message.reply("Select channel:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 @router.callback_query(F.data.startswith("single_"))
-async def send_to_single_channel(callback: CallbackQuery):
+async def select_single(callback: CallbackQuery, state: FSMContext):
     channel_id = int(callback.data.split("_")[1])
-    await db.save_temp_post(callback.from_user.id, {"pending_channel": channel_id, "send_type": "single"})
+    await state.update_data(send_type="single", pending_channel=channel_id)
     await callback.message.reply("confirm please")
 
-# ==================== SEND TO MULTIPLE CHANNELS ====================
-@router.callback_query(F.data == "send_multi")
-async def send_multi_option(callback: CallbackQuery):
+@router.message(F.text.lower() == "/send more channel")
+async def send_more_cmd(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
     channels = await db.get_channels()
+    if not channels: return
     
-    if not channels:
-        await callback.message.reply("❌ Bot is not admin in any channel! Add channels to database first.")
-        return
-    
-    keyboard = []
-    for ch in channels:
-        keyboard.append([InlineKeyboardButton(text=f"☐ {ch['name']}", callback_data=f"multi_{ch['_id']}")])
+    await state.update_data(multi_channels=[])
+    keyboard = [[InlineKeyboardButton(text=f"☐ {ch['name']}", callback_data=f"multi_{ch['_id']}")] for ch in channels]
     keyboard.append([InlineKeyboardButton(text="✅ Done", callback_data="multi_done")])
-    
-    await callback.message.reply(
-        "📢 Select channels (tap to select, then Done):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
+    await message.reply("Select channels:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
-@router.callback_query(F.data.startswith("multi_") & ~F.data == "multi_done")
-async def multi_select_channel(callback: CallbackQuery):
-    channel_id = callback.data.split("_")[1]
-    user_id = callback.from_user.id
+@router.callback_query(F.data.startswith("multi_") & ~F.data.in_(["multi_done"]))
+async def toggle_multi(callback: CallbackQuery, state: FSMContext):
+    channel_id = int(callback.data.split("_")[1])
+    data = await state.get_data()
+    selected = data.get("multi_channels", [])
     
-    if user_id not in multi_selected:
-        multi_selected[user_id] = []
-    
-    if channel_id in multi_selected[user_id]:
-        multi_selected[user_id].remove(channel_id)
-        await callback.answer("Removed")
-    else:
-        multi_selected[user_id].append(channel_id)
-        await callback.answer("Added")
+    if channel_id in selected: selected.remove(channel_id)
+    else: selected.append(channel_id)
+    await state.update_data(multi_channels=selected)
     
     channels = await db.get_channels()
-    keyboard = []
-    for ch in channels:
-        checked = "✅" if str(ch['_id']) in multi_selected[user_id] else "☐"
-        keyboard.append([InlineKeyboardButton(text=f"{checked} {ch['name']}", callback_data=f"multi_{ch['_id']}")])
+    keyboard = [[InlineKeyboardButton(text=f"{'✅' if ch['_id'] in selected else '☐'} {ch['name']}", callback_data=f"multi_{ch['_id']}")] for ch in channels]
     keyboard.append([InlineKeyboardButton(text="✅ Done", callback_data="multi_done")])
-    
     await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 @router.callback_query(F.data == "multi_done")
-async def multi_done_selection(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    selected = multi_selected.get(user_id, [])
-    
-    if not selected:
-        await callback.message.reply("❌ No channels selected!")
-        return
-    
-    await db.save_temp_post(user_id, {"pending_channels": selected, "send_type": "multi"})
-    await callback.message.reply(f"✅ {len(selected)} channel(s) selected\nconfirm please")
+async def multi_done(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(send_type="multi")
+    await callback.message.reply("confirm please")
 
-# ==================== FINAL CONFIRM FOR SEND ====================
-@router.message(Command("confirm"))
-async def confirm_send(message: Message):
-    temp = await db.get_temp_post(message.from_user.id)
+@router.message(F.text.lower() == "/confirm")
+async def confirm_send(message: Message, state: FSMContext):
+    data = await state.get_data()
+    send_type = data.get("send_type")
+    if not send_type: return
+    
     latest_post = await db.get_latest_post()
+    if not latest_post: return
     
-    if not latest_post:
-        await message.reply("❌ No post found to send. Create a post first with /post")
-        return
+    btn_text = f"Watch Episode {latest_post['episode_label']}"
+    deep_link = f"https://t.me/{BOT_USERNAME}?start=episode_{latest_post['episode_label']}"
+    button = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=btn_text, url=deep_link)]])
     
-    if temp.get("send_type") == "single" and temp.get("pending_channel"):
-        try:
-            await message.bot.copy_message(
-                chat_id=temp["pending_channel"],
-                from_chat_id=STORAGE_CHANNEL_ID,
-                message_id=latest_post["storage_msg_id"],
-                reply_markup=latest_post.get("reply_markup")
-            )
-            await message.reply("✅ Post delivered to channel!")
-        except Exception as e:
-            await message.reply(f"❌ Failed: {e}")
-    
-    elif temp.get("send_type") == "multi" and temp.get("pending_channels"):
-        success = 0
-        failed = 0
-        
-        for ch_id in temp["pending_channels"]:
-            try:
-                await message.bot.copy_message(
-                    chat_id=int(ch_id),
-                    from_chat_id=STORAGE_CHANNEL_ID,
-                    message_id=latest_post["storage_msg_id"],
-                    reply_markup=latest_post.get("reply_markup")
-                )
-                success += 1
-            except Exception as e:
-                failed += 1
-                print(f"Failed to send to {ch_id}: {e}")
-        
-        await message.reply(f"✅ Delivered to {success} channels.\n❌ Failed: {failed}")
-    else:
-        await message.reply("❌ No channel selected. Use /send or /send more channel first.")
-    
-    await db.delete_temp_post(message.from_user.id)
-    if message.from_user.id in multi_selected:
-        del multi_selected[message.from_user.id]
+    if send_type == "single":
+        await message.bot.copy_message(data["pending_channel"], STORAGE_CHANNEL_ID, latest_post["main_msg_id"], reply_markup=button)
+    elif send_type == "multi":
+        for ch_id in data.get("multi_channels", []):
+            try: await message.bot.copy_message(ch_id, STORAGE_CHANNEL_ID, latest_post["main_msg_id"], reply_markup=button)
+            except: pass
+            
+    await message.reply("✅ Post successfully delivered!")
+    await state.clear()
 
-# ==================== /send COMMAND ====================
-@router.message(Command("send"))
-async def send_cmd(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    channels = await db.get_channels()
-    if not channels:
-        await message.reply("❌ No channels found! Make sure bot is admin in channels and added to database.")
-        return
-    keyboard = []
-    for ch in channels:
-        keyboard.append([InlineKeyboardButton(text=ch["name"], callback_data=f"single_{ch['_id']}")])
-    await message.reply("📢 Select channel:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-
-# ==================== /send more channel COMMAND ====================
-@router.message(Command("send more channel"))
-async def send_more_cmd(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    channels = await db.get_channels()
-    if not channels:
-        await message.reply("❌ No channels found! Make sure bot is admin in channels and added to database.")
-        return
-    keyboard = []
-    for ch in channels:
-        keyboard.append([InlineKeyboardButton(text=f"☐ {ch['name']}", callback_data=f"multi_{ch['_id']}")])
-    keyboard.append([InlineKeyboardButton(text="✅ Done", callback_data="multi_done")])
-    await message.reply("Select channels (tap to select, then Done):", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-
-# ==================== SHORTNER ACCOUNT ====================
-@router.message(Command("add shortner account"))
+# ==================== SHORTNER ====================
+@router.message(F.text.lower() == "/add shortner account")
 async def add_shortner_cmd(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await message.reply("🔗 Provide deskboard URL")
+    if not is_admin(message.from_user.id): return
+    await message.reply("provide deskbord url")
     await state.set_state(ShortnerAddState.waiting_url)
 
 @router.message(ShortnerAddState.waiting_url)
 async def shortner_url(message: Message, state: FSMContext):
-    await state.update_data(url=message.text)
-    await message.reply("🔑 Send your API Token")
+    await state.update_data(url=message.text.strip())
+    await message.reply("send your API Token")
     await state.set_state(ShortnerAddState.waiting_token)
 
 @router.message(ShortnerAddState.waiting_token)
 async def shortner_token(message: Message, state: FSMContext):
     data = await state.get_data()
-    await db.add_shortner(data["url"], message.text)
-    await message.reply("✅ Shortner account successfully added! 🤗🤗🤗")
+    await db.add_shortner(data["url"], message.text.strip())
+    await message.reply("successfully add 🤗🤗🤗")
     await state.clear()
 
-@router.message(Command("remove shortner account"))
+@router.message(F.text.lower() == "/remove shortner account")
 async def remove_shortner_cmd(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    
+    if not is_admin(message.from_user.id): return
     shortners = await db.get_shortners()
-    if not shortners:
-        await message.reply("❌ No shortner accounts found.")
-        return
-    
-    keyboard = []
-    for s in shortners:
-        keyboard.append([InlineKeyboardButton(text=s["url"], callback_data=f"rem_{s['_id']}")])
-    
-    await message.reply("Select account to remove:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    keyboard = [[InlineKeyboardButton(text=f"{s['url'].replace('https://','')} - {s['api'][:4]}...", callback_data=f"rem_short_{s['_id']}")] for s in shortners]
+    await message.reply("select account", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
-@router.callback_query(F.data.startswith("rem_"))
-async def select_remove(callback: CallbackQuery, state: FSMContext):
-    shortner_id = callback.data.split("_")[1]
-    await state.update_data(shortner_id=shortner_id)
-    await callback.message.reply("क्या आप हटाना चाहते हैं?\nType /delete")
+@router.callback_query(F.data.startswith("rem_short_"))
+async def select_remove_short(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(del_shortner_id=callback.data.split("_")[2])
+    await callback.message.reply("kya aap hatana chahte hai\ntype /delete")
 
-@router.message(Command("delete"))
-async def delete_shortner(message: Message, state: FSMContext):
+@router.message(F.text.lower() == "/delete")
+async def delete_cmd(message: Message, state: FSMContext):
     data = await state.get_data()
-    shortner_id = data.get("shortner_id")
-    if shortner_id:
-        await db.remove_shortner(shortner_id)
-        await message.reply("✅ Successfully deleted shortner account!")
-    else:
-        await message.reply("❌ No shortner selected.")
-    await state.clear()
+    if "del_shortner_id" in data:
+        await db.remove_shortner(data["del_shortner_id"])
+        await message.reply("successfully delete account for shortner")
+        await state.clear()
 
-# ==================== PREMIUM SYSTEM ====================
-@router.message(Command("add premium"))
-async def add_premium_cmd(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await message.reply("Send user ID")
+# ==================== PREMIUM ====================
+@router.message(F.text.lower() == "/add premium")
+async def add_prem(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await message.reply("send I'd")
     await state.set_state(PremiumAddState.waiting_id)
 
 @router.message(PremiumAddState.waiting_id)
-async def premium_id(message: Message, state: FSMContext):
-    try:
-        user_id = int(message.text.strip())
-        await state.update_data(premium_user=user_id)
-        await message.reply("✅ Successfully add member\nPlease confirm type /hu hu")
-    except:
-        await message.reply("❌ Invalid user ID. Send a number.")
+async def prem_id(message: Message, state: FSMContext):
+    await state.update_data(prem_id=int(message.text.strip()))
+    await message.reply("successfully add member\nPleas confirm type /hu hu")
 
-@router.message(Command("hu hu"))
-async def confirm_premium(message: Message, state: FSMContext):
+@router.message(F.text.lower() == "/hu hu")
+async def confirm_prem(message: Message, state: FSMContext):
     data = await state.get_data()
-    user_id = data.get("premium_user")
-    if user_id:
-        expiry = await db.add_premium(user_id)
-        await message.reply(f"✅ Successfully add member {user_id} 🪄🪄🪄\nValid until: {expiry.strftime('%Y-%m-%d')}")
-    else:
-        await message.reply("❌ No user ID found. Use /add premium first.")
-    await state.clear()
+    if "prem_id" in data:
+        await db.add_premium(data["prem_id"])
+        await message.reply(f"successfully add member {data['prem_id']} 🪄🪄🪄")
+        await state.clear()
 
-@router.message(Command("remove premium"))
-async def remove_premium_cmd(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await message.reply("Send user ID")
+@router.message(F.text.lower() == "/remove premium")
+async def remove_prem(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await message.reply("send I'd")
     await state.set_state(PremiumRemoveState.waiting_id)
 
 @router.message(PremiumRemoveState.waiting_id)
-async def remove_premium_id(message: Message, state: FSMContext):
-    try:
-        user_id = int(message.text.strip())
-        await db.remove_premium(user_id)
-        await message.reply(f"✅ Successfully deleted and banned\nUser {user_id} cannot use bot anymore.")
-    except:
-        await message.reply("❌ Invalid user ID.")
+async def del_prem(message: Message, state: FSMContext):
+    await db.remove_premium(int(message.text.strip()))
+    await message.reply("successfully deleted and ban")
     await state.clear()
 
-@router.message(Command("show premium list"))
+@router.message(F.text.lower() == "/show premium list")
 async def show_premium(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    
+    if not is_admin(message.from_user.id): return
     users = await db.get_premium_list()
-    if not users:
-        await message.reply("📭 No premium users.")
-        return
-    
-    text = "🌟 Premium Users:\n\n"
-    for user in users:
-        text += f"• `{user['_id']}` - Expires: {user['premium_expiry'].strftime('%Y-%m-%d')}\n"
+    text = "🌟 Premium Users:\n\n" + "\n".join([f"• `{u['_id']}` - Exp: {u['premium_expiry'].strftime('%Y-%m-%d')}" for u in users]) if users else "📭 No premium users."
     await message.reply(text)
 
-# ==================== FORCE SUBSCRIBE ====================
-@router.message(Command("Force sub"))
-async def force_sub_cmd(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await message.reply("Please send message and check I'm admin in channel")
+# ==================== FSUB ====================
+@router.message(F.text.lower() == "/force sub")
+async def fsub_cmd(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await message.reply("please send massage and chack I'm admin gc")
     await state.set_state(FSUBState.waiting_message)
 
 @router.message(FSUBState.waiting_message)
 async def receive_fsub(message: Message, state: FSMContext):
-    if message.forward_from_chat:
-        channel_id = message.forward_from_chat.id
-        channel_name = message.forward_from_chat.title or str(channel_id)
-        await db.add_fsub_channel(channel_id, channel_name)
-        await message.reply(f"😘 Adding successfully 😲\n{channel_name}")
+    if message.forward_origin and message.forward_origin.type == "chat":
+        chat = message.forward_origin.chat
+        await db.add_fsub_channel(chat.id, chat.title)
+        await message.reply("😘 adding successfully 😲")
     else:
-        await message.reply("❌ Please forward a message from the channel.")
+        await message.reply("Please forward directly from the channel.")
     await state.clear()
-
-# ==================== RETRY CALLBACK ====================
-@router.callback_query(F.data.startswith("retry_"))
-async def retry_episode(callback: CallbackQuery):
-    episode = callback.data.split("_")[1]
-    await send_episode_to_user(callback.message, callback.from_user.id, episode)
-    await callback.answer()

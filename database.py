@@ -15,6 +15,7 @@ class Database:
         self.channels = self.db.channels
         self.fsub_channels = self.db.fsub_channels
         self.posts = self.db.posts
+        self.temp_posts = self.db.temp_posts
     
     # ==================== USER PREMIUM SYSTEM ====================
     async def add_premium(self, user_id: int):
@@ -29,8 +30,7 @@ class Database:
     async def remove_premium(self, user_id: int):
         await self.users.update_one(
             {"_id": user_id},
-            {"$set": {"premium": False, "banned": True}},
-            upsert=True
+            {"$set": {"premium": False, "banned": True}}
         )
     
     async def is_premium(self, user_id: int) -> bool:
@@ -61,7 +61,10 @@ class Database:
         return str(result.inserted_id)
     
     async def remove_shortner(self, shortner_id: str):
-        await self.shortners.delete_one({"_id": ObjectId(shortner_id)})
+        try:
+            await self.shortners.delete_one({"_id": ObjectId(shortner_id)})
+        except:
+            pass
     
     async def get_shortners(self):
         cursor = self.shortners.find({"active": True})
@@ -71,7 +74,7 @@ class Database:
         shortners = await self.get_shortners()
         return random.choice(shortners) if shortners else None
     
-    # ==================== CHANNELS (where bot sends posts) ====================
+    # ==================== CHANNELS ====================
     async def add_channel(self, channel_id: int, channel_name: str):
         await self.channels.update_one(
             {"_id": channel_id},
@@ -82,9 +85,6 @@ class Database:
     async def get_channels(self):
         cursor = self.channels.find({"active": True})
         return await cursor.to_list(length=100)
-    
-    async def remove_channel(self, channel_id: int):
-        await self.channels.delete_one({"_id": channel_id})
     
     # ==================== FORCE SUBSCRIBE CHANNELS ====================
     async def add_fsub_channel(self, channel_id: int, channel_name: str, join_link: str = None):
@@ -98,8 +98,19 @@ class Database:
         cursor = self.fsub_channels.find()
         return await cursor.to_list(length=100)
     
-    async def remove_fsub_channel(self, channel_id: int):
-        await self.fsub_channels.delete_one({"_id": channel_id})
+    # ==================== TEMP POST STORAGE ====================
+    async def save_temp_post(self, user_id: int, data: dict):
+        await self.temp_posts.update_one(
+            {"user_id": user_id},
+            {"$set": data},
+            upsert=True
+        )
+    
+    async def get_temp_post(self, user_id: int):
+        return await self.temp_posts.find_one({"user_id": user_id})
+    
+    async def delete_temp_post(self, user_id: int):
+        await self.temp_posts.delete_one({"user_id": user_id})
     
     # ==================== FINAL POST STORAGE ====================
     async def save_post(self, post_data: dict):
@@ -109,7 +120,19 @@ class Database:
     async def get_latest_post(self):
         return await self.posts.find_one(sort=[("created_at", -1)])
     
-    async def get_post_by_episode(self, episode_label: str):
-        return await self.posts.find_one({"episode_label": episode_label})
+    async def get_post_by_episode(self, episode: str):
+        post = await self.posts.find_one({"episode": episode})
+        if post: return post
+        
+        all_posts = await self.posts.find({"batch_range": {"$exists": True}}).to_list(length=100)
+        for post in all_posts:
+            batch_range = post.get("batch_range", "")
+            if "-" in batch_range:
+                try:
+                    start, end = batch_range.split("-")
+                    if int(start) <= int(episode) <= int(end):
+                        return post
+                except: pass
+        return None
 
 db = Database()

@@ -4,7 +4,7 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import OWNER_ID, ALLOWED_USERS, STORAGE_CHANNEL_ID, BOT_USERNAME
+from config import OWNER_ID, ALLOWED_USERS, STORAGE_CHANNEL_ID, EPISODE_CHANNEL_ID, BOT_USERNAME
 from database import db
 
 router = Router()
@@ -22,15 +22,17 @@ def is_admin(uid):
 @router.message(Command("post"))
 async def post_cmd(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
-    await message.reply("📤 Send the Main Post Media (Poster/Video) for the channel.")
+    await message.reply("📤 Send the Main Post Media (Poster) for the channel.")
     await state.set_state(PostState.waiting_post)
 
 @router.message(PostState.waiting_post)
 async def receive_post(message: Message, state: FSMContext):
     if message.photo or message.video or message.document or message.forward_from_chat:
+        # POSTER GOES TO STORAGE CHANNEL
         stored = await message.bot.forward_message(STORAGE_CHANNEL_ID, message.chat.id, message.message_id)
         await db.save_temp(message.from_user.id, {"storage_msg_id": stored.message_id})
-        await message.reply("✅ Post received.\n\nNow, send:\n`single link` OR `batch link`", parse_mode="Markdown")
+        
+        await message.reply("✅ Poster received.\n\nNow, send:\n`single link` OR `batch link`", parse_mode="Markdown")
         await state.set_state(PostState.waiting_link_type)
     else:
         await message.reply("❌ Send valid media.")
@@ -40,7 +42,7 @@ async def link_type(message: Message, state: FSMContext):
     text = message.text.lower()
     if "batch" in text:
         await db.save_temp(message.from_user.id, {"type": "batch", "episodes": []})
-        await message.reply("📚 Forward all episodes one by one.\nType `done` when finished.")
+        await message.reply("📚 Forward all episode files one by one.\nType `done` when finished.")
         await state.set_state(PostState.waiting_batch_ep)
     elif "single" in text:
         await db.save_temp(message.from_user.id, {"type": "single"})
@@ -53,9 +55,11 @@ async def link_type(message: Message, state: FSMContext):
 async def single_ep(message: Message, state: FSMContext):
     temp = await db.get_temp(message.from_user.id)
     if message.photo or message.video or message.document or message.forward_from_chat:
-        stored_ep = await message.bot.forward_message(STORAGE_CHANNEL_ID, message.chat.id, message.message_id)
+        # EPISODE GOES TO EPISODE CHANNEL
+        stored_ep = await message.bot.forward_message(EPISODE_CHANNEL_ID, message.chat.id, message.message_id)
         await db.save_temp(message.from_user.id, {"episode_msg_id": stored_ep.message_id})
-        await message.reply("✅ Episode saved.\nSend episode number (example: `07`)")
+        
+        await message.reply("✅ Episode saved in Episode Base.\nSend episode number (example: `07`)")
         return
     if message.text:
         ep = message.text.strip()
@@ -68,10 +72,11 @@ async def batch_ep(message: Message, state: FSMContext):
     temp = await db.get_temp(message.from_user.id)
     episodes = temp.get("episodes", [])
     if message.photo or message.video or message.document or message.forward_from_chat:
-        stored = await message.bot.forward_message(STORAGE_CHANNEL_ID, message.chat.id, message.message_id)
+        # BATCH EPISODES GO TO EPISODE CHANNEL
+        stored = await message.bot.forward_message(EPISODE_CHANNEL_ID, message.chat.id, message.message_id)
         episodes.append(stored.message_id)
         await db.save_temp(message.from_user.id, {"episodes": episodes})
-        await message.reply(f"✅ Episode {len(episodes)} saved. Send next or type `done`.")
+        await message.reply(f"✅ Episode {len(episodes)} saved in Episode Base. Send next or type `done`.")
         return
     if message.text and message.text.lower() == "done":
         if len(episodes) < 2:
@@ -115,7 +120,6 @@ async def confirm_post(message: Message):
         ep_param = temp.get("episode")
         btn_text = f"🎬 Watch Episode {ep_param}"
 
-    # BOT_USERNAME ko clean kiya taaki @ ka issue na aaye
     clean_bot_username = BOT_USERNAME.replace("@", "")
     deep_link = f"https://t.me/{clean_bot_username}?start=ep_{ep_param}"
     
@@ -123,12 +127,14 @@ async def confirm_post(message: Message):
     
     await db.save_post({
         "storage_msg_id": temp.get("storage_msg_id"),
+        "episode_msg_id": temp.get("episode_msg_id"),
         "type": temp.get("type"),
         "episode": temp.get("episode"),
         "batch_range": temp.get("batch_range"),
         "reply_markup": button.model_dump()
     })
 
+    # Show preview to Admin
     await message.bot.copy_message(
         message.chat.id, 
         STORAGE_CHANNEL_ID, 

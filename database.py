@@ -88,14 +88,21 @@ class Database:
                     return post
         return None
 
-    async def add_batch_episode(self, episode_number: int, storage_msg_id: int):
-        await self.batch_episodes.update_one({"episode": episode_number}, {"$set": {"storage_msg_id": storage_msg_id}}, upsert=True)
+    # ====== BATCH EPISODES FIX ======
+    async def add_batch_episode(self, episode_number: int, storage_msg_id: int, chat_id: int = None):
+        data = {"storage_msg_id": storage_msg_id}
+        if chat_id:
+            data["chat_id"] = chat_id
+        await self.batch_episodes.update_one({"episode": episode_number}, {"$set": data}, upsert=True)
 
     async def get_batch_range(self, start: int, end: int):
         cursor = self.batch_episodes.find({"episode": {"$gte": start, "$lte": end}})
         result = {}
         async for doc in cursor:
-            result[doc["episode"]] = doc["storage_msg_id"]
+            result[doc["episode"]] = {
+                "msg_id": doc["storage_msg_id"],
+                "chat_id": doc.get("chat_id") # Null for old posts
+            }
         return result
 
 db = Database()

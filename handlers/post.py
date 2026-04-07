@@ -32,12 +32,15 @@ async def post_cmd(message: Message, state: FSMContext):
 # ================= RECEIVE POST =================
 @router.message(PostState.waiting_post)
 async def receive_post(message: Message, state: FSMContext):
-    if (message.photo or message.video or message.document or message.forward_from_chat):
+    if message.photo or message.video or message.document or message.forward_from_chat:
         stored = await message.bot.forward_message(
             STORAGE_CHANNEL_ID, message.chat.id, message.message_id
         )
         await db.save_temp(message.from_user.id, {"storage_msg_id": stored.message_id})
-        await message.reply("✅ Post received.\n\nSend:\n`single link` or `batch link`", parse_mode="Markdown")
+        await message.reply(
+            "✅ Post received.\n\nSend:\n`single link` or `batch link`",
+            parse_mode="Markdown"
+        )
         await state.set_state(PostState.waiting_link_type)
     else:
         await message.reply("❌ Send valid media.")
@@ -61,8 +64,8 @@ async def link_type(message: Message, state: FSMContext):
 async def single_ep(message: Message, state: FSMContext):
     temp = await db.get_temp(message.from_user.id)
 
-    # Step 1: forward episode
-    if (message.photo or message.video or message.document or message.forward_from_chat):
+    # STEP 1: Forward Episode
+    if message.photo or message.video or message.document or message.forward_from_chat:
         stored_ep = await message.bot.forward_message(
             STORAGE_CHANNEL_ID, message.chat.id, message.message_id
         )
@@ -70,7 +73,7 @@ async def single_ep(message: Message, state: FSMContext):
         await message.reply("✅ Episode saved.\nSend episode number (example: `07`)")
         return
 
-    # Step 2: episode number
+    # STEP 2: Episode Number
     if message.text:
         ep = message.text.strip()
         await db.save_temp(message.from_user.id, {**temp, "episode": ep})
@@ -83,7 +86,7 @@ async def batch_ep(message: Message, state: FSMContext):
     temp = await db.get_temp(message.from_user.id)
     episodes = temp.get("episodes", [])
 
-    if (message.photo or message.video or message.document or message.forward_from_chat):
+    if message.photo or message.video or message.document or message.forward_from_chat:
         stored = await message.bot.forward_message(
             STORAGE_CHANNEL_ID, message.chat.id, message.message_id
         )
@@ -92,13 +95,12 @@ async def batch_ep(message: Message, state: FSMContext):
         await message.reply(f"✅ Episode {len(episodes)} saved")
         return
 
-    if message.text == "done":
+    if message.text and message.text.lower() == "done":
         if len(episodes) < 2:
             await message.reply("❌ Minimum 2 episodes required.")
             return
         await message.reply("Send range (example: `05-15`)")
         await state.set_state(PostState.waiting_batch_range)
-        return
 
 # ================= RANGE =================
 @router.message(PostState.waiting_batch_range)
@@ -111,11 +113,13 @@ async def batch_range(message: Message, state: FSMContext):
         s, e = rng.split("-")
         start = int(s)
         end = int(e)
-        if end - start + 1 != len(episodes_ids):
+        total_range = end - start + 1
+        if total_range != len(episodes_ids):
             await message.reply("❌ Range count mismatch.")
             return
-        for i, ep in enumerate(range(start, end + 1)):
-            await db.add_batch_episode(ep, episodes_ids[i])
+        # Save mapping
+        for i, ep_num in enumerate(range(start, end + 1)):
+            await db.add_batch_episode(ep_num, episodes_ids[i])
     except:
         await message.reply("❌ Invalid range.")
         return
@@ -132,6 +136,7 @@ async def confirm_post(message: Message):
         await message.reply("❌ No post.")
         return
 
+    # Button Setup
     if temp.get("type") == "batch":
         episode_param = temp.get("batch_range")
         btn_text = f"🎬 Watch Episodes {episode_param}"
@@ -139,12 +144,12 @@ async def confirm_post(message: Message):
         episode_param = temp.get("episode")
         btn_text = f"🎬 Watch Episode {episode_param}"
 
-    # IMPORTANT: Button always uses deep link, NOT shortner
     deep_link = f"https://t.me/{BOT_USERNAME}?start=ep_{episode_param}"
     button = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=btn_text, url=deep_link)]]
     )
 
+    # Preview send
     await message.bot.copy_message(
         message.chat.id,
         STORAGE_CHANNEL_ID,
@@ -152,6 +157,7 @@ async def confirm_post(message: Message):
         reply_markup=button
     )
 
+    # SAVE POST
     await db.save_post({
         "storage_msg_id": temp["storage_msg_id"],
         "type": temp.get("type"),
@@ -160,6 +166,7 @@ async def confirm_post(message: Message):
         "reply_markup": button.model_dump()
     })
 
+    # Send options
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📤 Send", callback_data="send_single")],

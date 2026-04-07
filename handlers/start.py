@@ -145,6 +145,7 @@ async def send_episode_direct(message: Message, ep: str):
     uid = message.from_user.id
     
     if "-" in ep:
+        # ====== BATCH LINK ======
         try:
             start_str, end_str = ep.split("-")
             start_ep, end_ep = int(start_str), int(end_str)
@@ -159,11 +160,16 @@ async def send_episode_direct(message: Message, ep: str):
                 msg_id = batch_data.get(ep_num)
                 if msg_id:
                     try:
-                        # AB BATCH VIDEO EPISODE CHANNEL SE JAYEGI
+                        # Pehle naye Episode Channel se try karega (Nayi Posts ke liye)
                         await message.bot.copy_message(uid, EPISODE_CHANNEL_ID, msg_id)
                         await asyncio.sleep(0.5) 
-                    except Exception as e:
-                        print(f"❌ Failed to send {ep_num}: {e}")
+                    except:
+                        try:
+                            # Agar fail hua, toh purane Storage Channel se dega (Purani Posts ke liye)
+                            await message.bot.copy_message(uid, STORAGE_CHANNEL_ID, msg_id)
+                            await asyncio.sleep(0.5)
+                        except Exception as e:
+                            print(f"❌ Failed to send {ep_num}: {e}")
                 else:
                     await message.reply(f"⚠️ Episode {ep_num} missing.")
             
@@ -171,18 +177,22 @@ async def send_episode_direct(message: Message, ep: str):
         except Exception as e:
             await message.reply("❌ Invalid batch range format.")
     else:
+        # ====== SINGLE LINK ======
         post = await db.get_post_by_episode(ep)
         if not post:
             await message.reply("❌ Episode not found.")
             return
+        
         try:
-            # AB SINGLE VIDEO EPISODE CHANNEL SE JAYEGI
             actual_video_id = post.get("episode_msg_id")
-            if not actual_video_id:
-                await message.reply("❌ Error: Original video not found for this post.")
-                return
+            if actual_video_id:
+                # Agar nayi post hai toh naye Episode Base se video jayegi
+                await message.bot.copy_message(uid, EPISODE_CHANNEL_ID, actual_video_id)
+            else:
+                # Agar PURANI post hai, toh purane Storage Base se video/post jayegi
+                old_video_id = post.get("storage_msg_id")
+                await message.bot.copy_message(uid, STORAGE_CHANNEL_ID, old_video_id)
                 
-            await message.bot.copy_message(uid, EPISODE_CHANNEL_ID, actual_video_id)
         except Exception as e:
             await message.reply(f"❌ Failed to send episode: {e}")
 

@@ -15,7 +15,6 @@ def is_admin(uid):
 
 # ================= HASH GENERATOR (BYPASS ROKNE KE LIYE) =================
 def generate_hash(uid: int, episode: str) -> str:
-    # Single ('10') aur Batch ('05-15') dono ke liye same hash kaam karega
     return hashlib.md5(f"{uid}_{episode}_{SECRET_HASH}".encode()).hexdigest()[:10]
 
 # ================= FORCE SUB CHECK =================
@@ -36,24 +35,22 @@ async def get_unjoined_channels(bot, uid):
 async def start_cmd(message: Message):
     uid = message.from_user.id
     
-    # 1. Ban Check
     if await db.is_banned(uid):
         await message.reply("❌ You are banned from using this bot.")
         return
 
-    # 2. Deep Link Check (Jab user button ya shortner se aaye)
+    # DEEP LINK CHECK (Jab Button ya Shortener se aaye)
     if message.text and " " in message.text:
         arg = message.text.split(" ", 1)[1].strip()
 
-        # STAGE 1: Naya link (Channel button se click kiya)
+        # Pehli baar Channel Button se click kare
         if arg.startswith("ep_"):
             ep = arg.replace("ep_", "")
             await handle_new_request(message, ep)
             return
             
-        # STAGE 2: Resolved link (Shortner solve karke wapas aaya)
+        # Shortner solve karne ke baad wapas aaye
         elif arg.startswith("res_"):
-            # rsplit se batch (05-15) aur hash dono properly alag honge
             parts = arg.replace("res_", "").rsplit("_", 1)
             if len(parts) == 2:
                 ep, received_hash = parts
@@ -62,40 +59,48 @@ async def start_cmd(message: Message):
                 if received_hash == expected_hash:
                     await handle_resolved_request(message, ep)
                 else:
-                    await message.reply("❌ <b>Invalid or expired link!</b>\nPlease click the button from the channel again to generate a new link.", parse_mode="HTML")
+                    await message.reply("❌ <b>Invalid or expired link!</b>\nPlease click the button from the channel again.", parse_mode="HTML")
             else:
-                await message.reply("❌ <b>Broken Link!</b>", parse_mode="HTML")
-            return  # Ye return pehle break ho raha tha isliye menu show ho raha tha
+                await message.reply("❌ <b>Broken Link!</b>\nTelegram couldn't process the link properly.", parse_mode="HTML")
+            return
+        
+        # Agar start param kuch aur aaya ho jo match na kare
+        else:
+            await message.reply("⚠️ <b>Invalid Command!</b> Please get the latest link from our channel.", parse_mode="HTML")
+            return
 
-    # 3. Normal Start Command (Sirf tab chalega jab koi param na ho)
-    text = (
-        "🤖 <b>Bot is alive!</b>\n\n"
-        "📌 <b>Admin Commands:</b>\n"
-        "/post - Upload new post (single or batch)\n"
-        "/send - Send to single channel\n"
-        "/sendmorechannel - Send to multiple channels\n"
-        "/confirm - Confirm send action\n"
-        "/hmm - Confirm post creation\n"
-        "/adshort - Add shortner account\n"
-        "/removeshot - Remove shortner account\n"
-        "/delete - Delete selected shortner\n"
-        "/addpri - Add premium user (28 days)\n"
-        "/removepri - Remove premium user\n"
-        "/showpremiumlist - Show premium users\n"
-        "/forcesub - Add force subscribe channel\n"
-    )
-    await message.reply(text, parse_mode="HTML")
+    # NORMAL START COMMAND (Bina kisi link/data ke)
+    if is_admin(uid):
+        # Sirf Admin ko hi command list dikhegi
+        text = (
+            "🤖 <b>Bot is alive!</b>\n\n"
+            "📌 <b>Admin Commands:</b>\n"
+            "/post - Upload new post (single or batch)\n"
+            "/send - Send to single channel\n"
+            "/sendmorechannel - Send to multiple channels\n"
+            "/confirm - Confirm send action\n"
+            "/hmm - Confirm post creation\n"
+            "/adshort - Add shortner account\n"
+            "/removeshot - Remove shortner account\n"
+            "/delete - Delete selected shortner\n"
+            "/addpri - Add premium user (28 days)\n"
+            "/removepri - Remove premium user\n"
+            "/showpremiumlist - Show premium users\n"
+            "/forcesub - Add force subscribe channel\n"
+        )
+        await message.reply(text, parse_mode="HTML")
+    else:
+        # Aam user ko sirf welcome message dikhega
+        await message.reply("👋 <b>Welcome!</b>\n\nPlease use the buttons provided in our main channel to download or watch episodes.", parse_mode="HTML")
 
-# ================= NEW REQUEST (GENERATE SHORTLINK) =================
+# ================= NEW REQUEST (GIVE SHORTLINK) =================
 async def handle_new_request(message: Message, ep: str):
     uid = message.from_user.id
     
-    # Premium user direct bypass
     if await db.is_premium(uid):
         await send_episode_direct(message, ep)
         return
 
-    # Force sub check before link generation
     not_joined = await get_unjoined_channels(message.bot, uid)
     if not_joined:
         await ask_for_fsub(message, not_joined, f"ep_{ep}")
@@ -104,7 +109,9 @@ async def handle_new_request(message: Message, ep: str):
     msg = await message.reply("⏳ Please wait, generating your secure link...")
     hash_val = generate_hash(uid, ep)
     
-    original_url = f"https://t.me/{BOT_USERNAME}?start=res_{ep}_{hash_val}"
+    # Bot username se '@' hatana zaroori hai warna deep link toot jati hai
+    clean_bot_username = BOT_USERNAME.replace("@", "")
+    original_url = f"https://t.me/{clean_bot_username}?start=res_{ep}_{hash_val}"
     
     shortners = await db.get_shortners()
     short_url = original_url
@@ -118,11 +125,10 @@ async def handle_new_request(message: Message, ep: str):
                 short_url = temp
                 break
 
-    # Agar Shortner Fail Hua Toh Error Dega, Direct Episode Nahi!
     if short_url == original_url and shortners:
         await msg.edit_text(
             "❌ <b>Shortner API Error!</b>\n\n"
-            "⚠️ Bot could not generate the link.\n"
+            "⚠️ Bot could not generate the shortlink.\n"
             "👉 Admin: Please check your shortner URL and API token.",
             parse_mode="HTML"
         )
@@ -140,14 +146,12 @@ async def handle_new_request(message: Message, ep: str):
 async def handle_resolved_request(message: Message, ep: str):
     uid = message.from_user.id
     
-    # Final force sub check (in case user left the channel while solving)
     not_joined = await get_unjoined_channels(message.bot, uid)
     if not_joined:
         hash_val = generate_hash(uid, ep)
         await ask_for_fsub(message, not_joined, f"res_{ep}_{hash_val}")
         return
         
-    # Episode deliver karega
     await send_episode_direct(message, ep)
 
 # ================= SEND EPISODE (SINGLE/BATCH) =================
@@ -155,7 +159,6 @@ async def send_episode_direct(message: Message, ep: str):
     uid = message.from_user.id
     
     if "-" in ep:
-        # ======= BATCH LINK =======
         try:
             start_str, end_str = ep.split("-")
             start_ep, end_ep = int(start_str), int(end_str)
@@ -171,18 +174,16 @@ async def send_episode_direct(message: Message, ep: str):
                 if msg_id:
                     try:
                         await message.bot.copy_message(uid, STORAGE_CHANNEL_ID, msg_id)
-                        await asyncio.sleep(0.5)  # Telegram API flood limit block se bachne ke liye
+                        await asyncio.sleep(0.5) 
                     except Exception as e:
-                        print(f"❌ Failed to send episode {ep_num}: {e}")
+                        print(f"❌ Failed to send {ep_num}: {e}")
                 else:
-                    await message.reply(f"⚠️ Episode {ep_num} is missing from database.")
+                    await message.reply(f"⚠️ Episode {ep_num} missing.")
             
-            await msg.delete() # 'Sending your episodes' message delete kar dega
-            
+            await msg.delete()
         except Exception as e:
             await message.reply("❌ Invalid batch range format.")
     else:
-        # ======= SINGLE LINK =======
         post = await db.get_post_by_episode(ep)
         if not post:
             await message.reply("❌ Episode not found.")
@@ -197,7 +198,7 @@ async def ask_for_fsub(message: Message, not_joined: list, callback_payload: str
     buttons = []
     for ch in not_joined:
         buttons.append([InlineKeyboardButton(text=f"📢 Join {ch['name']}", url=ch["link"])])
-    buttons.append([InlineKeyboardButton(text="✅ Try Again", url=f"https://t.me/{BOT_USERNAME}?start={callback_payload}")])
+    buttons.append([InlineKeyboardButton(text="✅ Try Again", url=f"https://t.me/{BOT_USERNAME.replace('@', '')}?start={callback_payload}")])
     
     await message.reply(
         "❌ <b>You must join our channels first to proceed!</b>\nJoin below and click Try Again.",

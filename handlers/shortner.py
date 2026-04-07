@@ -4,6 +4,8 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from urllib.parse import quote
+from bson import ObjectId
 from config import OWNER_ID, ALLOWED_USERS
 from database import db
 
@@ -16,7 +18,7 @@ class ShortnerState(StatesGroup):
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
-# ---------- MAIN SHORTNER FUNCTION ----------
+# ---------- MAIN SHORTNER FUNCTION (FIXED) ----------
 async def make_shortlink(shortner: dict, original_url: str) -> str:
     """
     Tries to create a short link using the given shortner account.
@@ -27,25 +29,28 @@ async def make_shortlink(shortner: dict, original_url: str) -> str:
     
     if not api_url or not api_key:
         return original_url
-    
+
+    print(f"🔗 Trying Shortner: {api_url}")
+    print(f"🔗 Original URL: {original_url}")
+
+    # URL encode the original URL
+    encoded_url = quote(original_url, safe="")
+    timeout_obj = aiohttp.ClientTimeout(total=15)
+
     try:
         async with aiohttp.ClientSession() as session:
             # Method 1: GET request (Adlinkfly & most common)
-            get_url = f"{api_url}?api={api_key}&url={original_url}"
-            async with session.get(get_url, timeout=10) as resp:
+            get_url = f"{api_url}?api={api_key}&url={encoded_url}"
+            async with session.get(get_url, timeout=timeout_obj) as resp:
                 if resp.status == 200:
                     try:
                         data = await resp.json()
                     except:
-                        # Sometimes response is plain text (the short link)
                         text = await resp.text()
                         if text.startswith("http"):
+                            print(f"✅ Short URL Generated: {text}")
                             return text.strip()
-                        else:
-                            # Not a valid link, try next method
-                            pass
                     else:
-                        # Common response keys
                         short = (
                             data.get("shortenedUrl") or
                             data.get("short_url") or
@@ -55,16 +60,18 @@ async def make_shortlink(shortner: dict, original_url: str) -> str:
                             None
                         )
                         if short and short.startswith("http"):
+                            print(f"✅ Short URL Generated: {short}")
                             return short
-            
+
             # Method 2: POST with form data
-            async with session.post(api_url, data={"api": api_key, "url": original_url}, timeout=10) as resp:
+            async with session.post(api_url, data={"api": api_key, "url": encoded_url}, timeout=timeout_obj) as resp:
                 if resp.status == 200:
                     try:
                         data = await resp.json()
                     except:
                         text = await resp.text()
                         if text.startswith("http"):
+                            print(f"✅ Short URL Generated: {text}")
                             return text.strip()
                     else:
                         short = (
@@ -76,16 +83,18 @@ async def make_shortlink(shortner: dict, original_url: str) -> str:
                             None
                         )
                         if short and short.startswith("http"):
+                            print(f"✅ Short URL Generated: {short}")
                             return short
-            
+
             # Method 3: POST with JSON
-            async with session.post(api_url, json={"api": api_key, "url": original_url}, timeout=10) as resp:
+            async with session.post(api_url, json={"api": api_key, "url": encoded_url}, timeout=timeout_obj) as resp:
                 if resp.status == 200:
                     try:
                         data = await resp.json()
                     except:
                         text = await resp.text()
                         if text.startswith("http"):
+                            print(f"✅ Short URL Generated: {text}")
                             return text.strip()
                     else:
                         short = (
@@ -97,11 +106,13 @@ async def make_shortlink(shortner: dict, original_url: str) -> str:
                             None
                         )
                         if short and short.startswith("http"):
+                            print(f"✅ Short URL Generated: {short}")
                             return short
     except Exception as e:
         print(f"Shortner error: {e}")
-    
+
     # If all methods fail, return original URL
+    print("⚠️ All shortner methods failed, using original URL")
     return original_url
 
 
@@ -132,7 +143,7 @@ async def shortner_api(message: Message, state: FSMContext):
     await state.clear()
 
 
-# ---------- REMOVE SHORTNER ----------
+# ---------- REMOVE SHORTNER (ObjectId fix) ----------
 @router.message(Command("removeshot"))
 async def remove_shortner_cmd(message: Message):
     if not is_admin(message.from_user.id):
@@ -144,7 +155,6 @@ async def remove_shortner_cmd(message: Message):
     
     keyboard = []
     for s in shortners:
-        # Show shortner URL as button text
         btn_text = s["url"][:40] + "..." if len(s["url"]) > 40 else s["url"]
         keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"rem_{s['_id']}")])
     
@@ -166,6 +176,7 @@ async def delete_shortner(message: Message, state: FSMContext):
     if not data.get("shortner_id"):
         await message.reply("❌ No shortner selected. Use /removeshot first.")
         return
-    await db.remove_shortner(data["shortner_id"])
+    # Convert string ID to ObjectId
+    await db.remove_shortner(ObjectId(data["shortner_id"]))
     await message.reply("✅ Shortner account deleted successfully.")
     await state.clear()

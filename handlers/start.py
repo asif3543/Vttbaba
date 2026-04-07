@@ -140,12 +140,11 @@ async def handle_resolved_request(message: Message, ep: str):
         
     await send_episode_direct(message, ep)
 
-# ================= SEND EPISODE (FIXED) =================
+# ================= SEND EPISODE (COLLISION FIXED) =================
 async def send_episode_direct(message: Message, ep: str):
     uid = message.from_user.id
     
     if "-" in ep:
-        # ====== BATCH LINK ======
         try:
             start_str, end_str = ep.split("-")
             start_ep, end_ep = int(start_str), int(end_str)
@@ -157,19 +156,16 @@ async def send_episode_direct(message: Message, ep: str):
                 
             msg = await message.reply("📤 Sending your episodes in batch...")
             for ep_num in range(start_ep, end_ep + 1):
-                msg_id = batch_data.get(ep_num)
-                if msg_id:
+                ep_info = batch_data.get(ep_num)
+                if ep_info:
+                    msg_id = ep_info["msg_id"]
+                    # Yaha bot exactly wo channel uthayega jisme file save hui thi
+                    chat_id = ep_info["chat_id"] if ep_info["chat_id"] else STORAGE_CHANNEL_ID
                     try:
-                        # Pehle Naye Channel se try karega
-                        await message.bot.copy_message(uid, EPISODE_CHANNEL_ID, msg_id)
+                        await message.bot.copy_message(uid, chat_id, msg_id)
                         await asyncio.sleep(0.5) 
-                    except Exception:
-                        try:
-                            # Agar Naye me error aaya toh Purane Channel se dega (Fallback)
-                            await message.bot.copy_message(uid, STORAGE_CHANNEL_ID, msg_id)
-                            await asyncio.sleep(0.5)
-                        except Exception as e:
-                            print(f"❌ Failed to send {ep_num}: {e}")
+                    except Exception as e:
+                        print(f"❌ Failed to send {ep_num}: {e}")
                 else:
                     await message.reply(f"⚠️ Episode {ep_num} missing.")
             
@@ -177,7 +173,6 @@ async def send_episode_direct(message: Message, ep: str):
         except Exception as e:
             await message.reply("❌ Invalid batch range format.")
     else:
-        # ====== SINGLE LINK ======
         post = await db.get_post_by_episode(ep)
         if not post:
             await message.reply("❌ Episode not found.")
@@ -186,11 +181,15 @@ async def send_episode_direct(message: Message, ep: str):
         try:
             actual_video_id = post.get("episode_msg_id")
             old_storage_id = post.get("storage_msg_id")
+            chat_id = post.get("episode_chat_id")
             
-            # Agar DB me nayi ID save hai toh naye channel se bhej do
-            if actual_video_id:
+            # 1. Nayi post banayi hai toh ye chalega
+            if actual_video_id and chat_id:
+                await message.bot.copy_message(uid, chat_id, actual_video_id)
+            # 2. Agar DB me chat_id save nahi hua (Mid-transition fix)
+            elif actual_video_id:
                 await message.bot.copy_message(uid, EPISODE_CHANNEL_ID, actual_video_id)
-            # Agar nayi ID nahi hai (Purani post hai), toh purane wale se bhej do
+            # 3. Purani post ke liye ye chalega
             elif old_storage_id:
                 await message.bot.copy_message(uid, STORAGE_CHANNEL_ID, old_storage_id)
             else:

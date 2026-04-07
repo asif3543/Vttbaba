@@ -1,74 +1,95 @@
 from aiogram import Router, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
+
 from config import OWNER_ID, ALLOWED_USERS, STORAGE_CHANNEL_ID
 from database import db
 
 router = Router()
 
-# Global temporary storage for multi‑channel selections (user_id -> list of channel _ids)
 multi_selected = {}
 
+# ================= ADMIN CHECK =================
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
+# ================= ADD CHANNEL =================
+# VERY IMPORTANT FEATURE
+@router.message(Command("addchannel"))
+async def add_channel_cmd(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.reply(
+        "📢 Forward any message from the channel.\n"
+        "Make sure I am admin there."
+    )
 
-# ------------------- /send (single channel) -------------------
+@router.message(F.forward_from_chat)
+async def save_channel_forward(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    chat = message.forward_from_chat
+    try:
+        bot_member = await message.bot.get_chat_member(chat.id, message.bot.id)
+        if bot_member.status not in ["administrator", "creator"]:
+            await message.reply("❌ I am not admin in that channel.")
+            return
+    except:
+        await message.reply("❌ Cannot access that channel.")
+        return
+
+    await db.add_channel(chat.id, chat.title)
+    await message.reply(f"✅ Channel added:\n{chat.title}")
+
+# ================= SEND SINGLE =================
 @router.message(Command("send"))
 async def send_command(message: Message):
     if not is_admin(message.from_user.id):
         return
-
     channels = await db.get_channels()
     if not channels:
-        await message.reply("❌ No channels found. Add channels to database first.")
+        await message.reply("❌ No channels found.\nUse /addchannel first.")
         return
+    keyboard = []
+    for ch in channels:
+        keyboard.append([
+            InlineKeyboardButton(text=ch["name"], callback_data=f"single_{ch['_id']}")
+        ])
+    await message.reply(
+        "📢 Select channel:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
 
-    keyboard = [
-        [InlineKeyboardButton(text=ch["name"], callback_data=f"single_{ch['_id']}")]
-        for ch in channels
-    ]
-    await message.reply("📢 Select channel to send the post:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-
-
-# ------------------- /sendmorechannel (multiple channels) -------------------
+# ================= SEND MULTI =================
 @router.message(Command("sendmorechannel"))
 async def send_more_command(message: Message):
     if not is_admin(message.from_user.id):
         return
-
     channels = await db.get_channels()
     if not channels:
-        await message.reply("❌ No channels found.")
+        await message.reply("❌ No channels found.\nUse /addchannel first.")
         return
-
     uid = message.from_user.id
-    multi_selected[uid] = []  # reset selection for this user
-
+    multi_selected[uid] = []
     keyboard = []
     for ch in channels:
-        keyboard.append([InlineKeyboardButton(text=f"☐ {ch['name']}", callback_data=f"multi_{ch['_id']}")])
-    keyboard.append([InlineKeyboardButton(text="✅ Done", callback_data="multi_done")])
+        keyboard.append([
+            InlineKeyboardButton(text=f"☐ {ch['name']}", callback_data=f"multi_{ch['_id']}")
+        ])
+    keyboard.append([
+        InlineKeyboardButton(text="✅ Done", callback_data="multi_done")
+    ])
+    await message.reply(
+        "Select channels:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
 
-    await message.reply("Select channels (tap to select, tap again to remove):", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-
-
-# ------------------- CALLBACK: single channel selection (from /send or send_single) -------------------
-@router.callback_query(F.data == "send_single")
-async def send_single_callback(callback: CallbackQuery):
-    channels = await db.get_channels()
-    if not channels:
-        await callback.message.reply("❌ No channels found.")
-        return
-
-    keyboard = [
-        [InlineKeyboardButton(text=ch["name"], callback_data=f"single_{ch['_id']}")]
-        for ch in channels
-    ]
-    await callback.message.reply("📢 Select channel:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    await callback.answer()
-
-
+# ================= SINGLE SELECT =================
 @router.callback_query(F.data.startswith("single_"))
 async def single_channel_selected(callback: CallbackQuery):
     channel_id = int(callback.data.split("_")[1])
@@ -76,103 +97,98 @@ async def single_channel_selected(callback: CallbackQuery):
         "send_channel": channel_id,
         "send_type": "single"
     })
-    await callback.message.reply(f"✅ Channel selected.\nType `/confirm` to send the post.")
+    await callback.message.reply("✅ Channel selected.\nType `/confirm`")
     await callback.answer()
 
-
-# ------------------- CALLBACK: multi‑channel selection (toggle) -------------------
+# ================= MULTI SELECT =================
 @router.callback_query(F.data.startswith("multi_") & (F.data != "multi_done"))
 async def multi_select_toggle(callback: CallbackQuery):
-    cid_str = callback.data.split("_")[1]  # channel _id as string
+    cid = callback.data.split("_")[1]
     uid = callback.from_user.id
-
     if uid not in multi_selected:
         multi_selected[uid] = []
-
-    if cid_str in multi_selected[uid]:
-        multi_selected[uid].remove(cid_str)
+    if cid in multi_selected[uid]:
+        multi_selected[uid].remove(cid)
         await callback.answer("Removed")
     else:
-        multi_selected[uid].append(cid_str)
+        multi_selected[uid].append(cid)
         await callback.answer("Added")
 
-    # Refresh the keyboard with updated checkmarks
     channels = await db.get_channels()
     keyboard = []
     for ch in channels:
-        checked = "✅" if str(ch['_id']) in multi_selected[uid] else "☐"
-        keyboard.append([InlineKeyboardButton(text=f"{checked} {ch['name']}", callback_data=f"multi_{ch['_id']}")])
-    keyboard.append([InlineKeyboardButton(text="✅ Done", callback_data="multi_done")])
-
-    await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-
+        checked = "✅" if str(ch["_id"]) in multi_selected[uid] else "☐"
+        keyboard.append([
+            InlineKeyboardButton(text=f"{checked} {ch['name']}", callback_data=f"multi_{ch['_id']}")
+        ])
+    keyboard.append([
+        InlineKeyboardButton(text="✅ Done", callback_data="multi_done")
+    ])
+    await callback.message.edit_reply_markup(
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
 
 @router.callback_query(F.data == "multi_done")
 async def multi_done_callback(callback: CallbackQuery):
     uid = callback.from_user.id
-    selected = multi_selected.get(uid, [])
-
+    selected = multi_selected.get(uid)
     if not selected:
-        await callback.message.reply("❌ No channels selected. Please select at least one.")
+        await callback.message.reply("❌ No channels selected.")
         return
-
-    # Convert string _ids to integers (or keep as strings, but DB expects int? We'll store as int)
     selected_int = [int(x) for x in selected]
     await db.save_temp(uid, {
         "send_channels": selected_int,
         "send_type": "multi"
     })
-    await callback.message.reply(f"✅ {len(selected)} channel(s) selected.\nType `/confirm` to send.")
+    await callback.message.reply(f"✅ {len(selected)} channel(s) selected.\nType `/confirm`")
     await callback.answer()
 
-
-# ------------------- /confirm : actually send the post -------------------
+# ================= CONFIRM SEND =================
 @router.message(Command("confirm"))
 async def confirm_send(message: Message):
     temp = await db.get_temp(message.from_user.id)
     latest_post = await db.get_latest_post()
-
     if not latest_post:
-        await message.reply("❌ No post found. Create a post using `/post` first.")
+        await message.reply("❌ No post found.")
         return
-
     if not temp:
-        await message.reply("❌ No channel selected. Use `/send` or `/sendmorechannel` first.")
+        await message.reply("❌ No channel selected.")
         return
 
-    # Single channel send
-    if temp.get("send_type") == "single" and temp.get("send_channel"):
+    # Restore reply markup
+    reply_markup = None
+    if latest_post.get("reply_markup"):
+        reply_markup = InlineKeyboardMarkup(**latest_post["reply_markup"])
+
+    # SINGLE
+    if temp.get("send_type") == "single":
         try:
             await message.bot.copy_message(
                 chat_id=temp["send_channel"],
                 from_chat_id=STORAGE_CHANNEL_ID,
                 message_id=latest_post["storage_msg_id"],
-                reply_markup=latest_post.get("reply_markup")  # preserves button if any
+                reply_markup=reply_markup
             )
-            await message.reply("✅ Post delivered to the channel!")
+            await message.reply("✅ Post sent!")
         except Exception as e:
-            await message.reply(f"❌ Failed to send: {e}")
+            await message.reply(f"❌ Failed:\n{e}")
 
-    # Multi channel send
-    elif temp.get("send_type") == "multi" and temp.get("send_channels"):
+    # MULTI
+    elif temp.get("send_type") == "multi":
         success = 0
         for cid in temp["send_channels"]:
             try:
                 await message.bot.copy_message(
-                    chat_id=int(cid),
+                    chat_id=cid,
                     from_chat_id=STORAGE_CHANNEL_ID,
                     message_id=latest_post["storage_msg_id"],
-                    reply_markup=latest_post.get("reply_markup")
+                    reply_markup=reply_markup
                 )
                 success += 1
             except Exception as e:
-                print(f"Failed to send to {cid}: {e}")
-        await message.reply(f"✅ Post delivered to {success} out of {len(temp['send_channels'])} channel(s).")
+                print(f"Send failed {cid}", e)
+        await message.reply(f"✅ Sent to {success}/{len(temp['send_channels'])}")
 
-    else:
-        await message.reply("❌ Invalid selection. Use /send or /sendmorechannel again.")
-
-    # Clean up temporary data and multi_selected
     await db.del_temp(message.from_user.id)
     if message.from_user.id in multi_selected:
         del multi_selected[message.from_user.id]

@@ -8,29 +8,18 @@ from database import db
 
 router = Router()
 
-# ---------- FSM ----------
 class FSubState(StatesGroup):
     waiting_forward = State()
 
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
-# =========================
-# /forcesub
-# =========================
 @router.message(Command("forcesub"))
 async def forcesub_cmd(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await message.reply(
-        "📢 Forward any message from the channel.\n"
-        "Make sure bot is ADMIN there."
-    )
+    if not is_admin(message.from_user.id): return
+    await message.reply("📢 Forward any message from the channel.\nMake sure bot is ADMIN there.")
     await state.set_state(FSubState.waiting_forward)
 
-# =========================
-# RECEIVE FORWARD
-# =========================
 @router.message(FSubState.waiting_forward)
 async def fsub_forward_received(message: Message, state: FSMContext):
     if not message.forward_from_chat:
@@ -41,7 +30,6 @@ async def fsub_forward_received(message: Message, state: FSMContext):
     channel_id = chat.id
     channel_name = chat.title or str(channel_id)
 
-    # ================= ADMIN CHECK
     try:
         bot_member = await message.bot.get_chat_member(channel_id, message.bot.id)
         if bot_member.status not in ["administrator", "creator"]:
@@ -51,7 +39,6 @@ async def fsub_forward_received(message: Message, state: FSMContext):
         await message.reply("❌ Cannot access channel.")
         return
 
-    # ================= CREATE LINK
     channel_link = None
     if chat.username:
         channel_link = f"https://t.me/{chat.username}"
@@ -66,26 +53,15 @@ async def fsub_forward_received(message: Message, state: FSMContext):
         await message.reply("❌ Failed to create invite link.")
         return
 
-    # ================= SAVE FORCE SUB
     await db.add_fsub(channel_id, channel_name, channel_link)
-
-    # ================= ALSO SAVE CHANNEL (IMPORTANT FIX)
     await db.add_channel(channel_id, channel_name)
 
-    await message.reply(
-        f"✅ Channel added successfully!\n\n"
-        f"📢 {channel_name}\n"
-        f"🔗 {channel_link}"
-    )
+    await message.reply(f"✅ Channel added successfully!\n\n📢 {channel_name}\n🔗 {channel_link}")
     await state.clear()
 
-# =========================
-# LIST CHANNELS
-# =========================
 @router.message(Command("fsub_list"))
 async def list_fsub(message: Message):
-    if not is_admin(message.from_user.id):
-        return
+    if not is_admin(message.from_user.id): return
     fsubs = await db.get_fsub()
     if not fsubs:
         await message.reply("📭 No force-sub channels.")
@@ -95,31 +71,20 @@ async def list_fsub(message: Message):
         text += f"{idx}. {ch['name']}\n{ch['link']}\n\n"
     await message.reply(text, parse_mode="Markdown")
 
-# =========================
-# REMOVE CHANNEL
-# =========================
 @router.message(Command("fsub_remove"))
 async def remove_fsub_cmd(message: Message):
-    if not is_admin(message.from_user.id):
-        return
+    if not is_admin(message.from_user.id): return
     fsubs = await db.get_fsub()
     if not fsubs:
         await message.reply("❌ No channels found.")
         return
     keyboard = []
     for ch in fsubs:
-        keyboard.append([
-            InlineKeyboardButton(text=ch["name"], callback_data=f"fsub_rem_{ch['_id']}")
-        ])
-    await message.reply(
-        "Select channel to remove:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
+        keyboard.append([InlineKeyboardButton(text=ch["name"], callback_data=f"fsub_rem_{ch['_id']}")])
+    await message.reply("Select channel to remove:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 @router.callback_query(F.data.startswith("fsub_rem_"))
 async def confirm_remove_fsub(callback: CallbackQuery):
     ch_id = int(callback.data.split("_")[2])
     await db.fsub.delete_one({"_id": ch_id})
-    await db.channels.delete_one({"_id": ch_id})
-    await callback.message.reply("✅ Channel removed.")
-    await callback.answer()
+    await callback.message.edit_text("✅ Channel removed from Force Sub.")

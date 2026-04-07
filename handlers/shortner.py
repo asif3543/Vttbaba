@@ -5,7 +5,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from bson import ObjectId
 from config import OWNER_ID, ALLOWED_USERS
 from database import db
@@ -25,25 +25,27 @@ async def make_shortlink(shortner: dict, original_url: str) -> str:
     api_key = shortner.get("api")
     if not api_url or not api_key: return original_url
 
-    # Ensuring original link is properly URL encoded
+    # Proper URL encoding
     encoded_url = quote(original_url, safe="")
+    
+    # Adding User-Agent because some shortners block bots
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+    }
     
     try:
         async with aiohttp.ClientSession() as session:
-            # Most common method for Adlinkfly, GP Links, etc.
             get_url = f"{api_url}?api={api_key}&url={encoded_url}"
-            async with session.get(get_url, timeout=15) as resp:
+            async with session.get(get_url, headers=headers, timeout=15) as resp:
                 text = await resp.text()
                 
                 try:
                     data = json.loads(text)
-                    # Checking successful response
                     if data.get("status") == "success" or data.get("shortenedUrl"):
                         short = data.get("shortenedUrl") or data.get("short_url") or data.get("link")
                         if short and short.startswith("http"):
                             return short
                 except json.JSONDecodeError:
-                    # Fallback if API returns plain text link instead of JSON
                     if text.strip().startswith("http"):
                         return text.strip()
     except Exception as e:
@@ -56,9 +58,9 @@ async def make_shortlink(shortner: dict, original_url: str) -> str:
 async def add_shortner_cmd(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
     await message.reply(
-        "🔗 Send API endpoint URL\n\n"
-        "⚠️ **IMPORTANT**: Make sure it ends with `/api`\n"
-        "✅ Example: `https://gplinks.in/api`",
+        "🔗 Send Shortner URL\n\n"
+        "*(You can send Dashboard URL or Homepage, I will auto-fix it)*\n"
+        "Example: `https://gplinks.com/`",
         parse_mode="Markdown"
     )
     await state.set_state(ShortnerState.waiting_url)
@@ -69,8 +71,19 @@ async def shortner_url(message: Message, state: FSMContext):
     if not url.startswith("http"):
         await message.reply("❌ URL must start with http:// or https://")
         return
-    await state.update_data(url=url)
-    await message.reply("🔑 Send API token/key")
+        
+    # ====== AUTO URL FIXER ======
+    # Ye user ke /member/dashboard ko automatically /api me badal dega
+    parsed = urlparse(url)
+    clean_url = f"{parsed.scheme}://{parsed.netloc}/api"
+    # ============================
+    
+    await state.update_data(url=clean_url)
+    await message.reply(
+        f"✅ **URL Auto-Corrected to:** `{clean_url}`\n\n"
+        f"🔑 Now send your API token/key",
+        parse_mode="Markdown"
+    )
     await state.set_state(ShortnerState.waiting_api)
 
 @router.message(ShortnerState.waiting_api)
@@ -78,7 +91,7 @@ async def shortner_api(message: Message, state: FSMContext):
     data = await state.get_data()
     api_key = message.text.strip()
     await db.add_shortner(data["url"], api_key)
-    await message.reply("✅ Shortner account added successfully!")
+    await message.reply("✅ Shortner account added successfully!\nNow you can test your links.")
     await state.clear()
 
 # ================= REMOVE SHORTNER =================

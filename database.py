@@ -2,6 +2,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from config import MONGODB_URL, DATABASE_NAME
 from datetime import datetime, timedelta
 import random
+from bson import ObjectId
 
 class Database:
     def __init__(self):
@@ -13,7 +14,7 @@ class Database:
         self.fsub = self.db.fsub
         self.posts = self.db.posts
         self.temp = self.db.temp
-        self.batch_episodes = self.db.batch_episodes   # new collection for batch episodes
+        self.batch_episodes = self.db.batch_episodes   # collection for batch episodes
 
     # ---------- Premium ----------
     async def add_premium(self, user_id: int):
@@ -54,7 +55,7 @@ class Database:
         await self.shortners.insert_one({"url": url, "api": api, "active": True})
 
     async def remove_shortner(self, sid):
-        await self.shortners.delete_one({"_id": sid})
+        await self.shortners.delete_one({"_id": ObjectId(sid)})
 
     async def get_shortners(self):
         return await self.shortners.find({"active": True}).to_list(100)
@@ -89,15 +90,14 @@ class Database:
 
     # ---------- Temp storage (for multi-step operations) ----------
     async def save_temp(self, user_id: int, data: dict):
-    old = await self.temp.find_one({"_id": user_id}) or {}
-    old.update(data)
-
-    await self.temp.update_one(
-        {"_id": user_id},
-        {"$set": old},
-        upsert=True
-    )
-    
+        # Fix: Proper indentation and merge logic
+        old = await self.temp.find_one({"_id": user_id}) or {}
+        old.update(data)
+        await self.temp.update_one(
+            {"_id": user_id},
+            {"$set": old},
+            upsert=True
+        )
 
     async def get_temp(self, user_id: int):
         return await self.temp.find_one({"_id": user_id})

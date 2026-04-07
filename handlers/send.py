@@ -19,7 +19,6 @@ def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
 # ================= ADD CHANNEL =================
-# VERY IMPORTANT FEATURE
 @router.message(Command("addchannel"))
 async def add_channel_cmd(message: Message):
     if not is_admin(message.from_user.id):
@@ -146,8 +145,10 @@ async def multi_done_callback(callback: CallbackQuery):
 # ================= CONFIRM SEND =================
 @router.message(Command("confirm"))
 async def confirm_send(message: Message):
-    temp = await db.get_temp(message.from_user.id)
+    uid = message.from_user.id
+    temp = await db.get_temp(uid)
     latest_post = await db.get_latest_post()
+
     if not latest_post:
         await message.reply("❌ No post found.")
         return
@@ -155,12 +156,15 @@ async def confirm_send(message: Message):
         await message.reply("❌ No channel selected.")
         return
 
-    # Restore reply markup
+    # Restore reply_markup safely
     reply_markup = None
     if latest_post.get("reply_markup"):
-        reply_markup = InlineKeyboardMarkup(**latest_post["reply_markup"])
+        try:
+            reply_markup = InlineKeyboardMarkup(**latest_post["reply_markup"])
+        except Exception as e:
+            print("Markup restore error:", e)
 
-    # SINGLE
+    # SINGLE SEND
     if temp.get("send_type") == "single":
         try:
             await message.bot.copy_message(
@@ -169,13 +173,14 @@ async def confirm_send(message: Message):
                 message_id=latest_post["storage_msg_id"],
                 reply_markup=reply_markup
             )
-            await message.reply("✅ Post sent!")
+            await message.reply("✅ Post sent successfully!")
         except Exception as e:
             await message.reply(f"❌ Failed:\n{e}")
 
-    # MULTI
+    # MULTI SEND
     elif temp.get("send_type") == "multi":
         success = 0
+        total = len(temp["send_channels"])
         for cid in temp["send_channels"]:
             try:
                 await message.bot.copy_message(
@@ -186,9 +191,10 @@ async def confirm_send(message: Message):
                 )
                 success += 1
             except Exception as e:
-                print(f"Send failed {cid}", e)
-        await message.reply(f"✅ Sent to {success}/{len(temp['send_channels'])}")
+                print(f"Send failed {cid}: {e}")
+        await message.reply(f"✅ Sent to {success}/{total} channels")
 
-    await db.del_temp(message.from_user.id)
-    if message.from_user.id in multi_selected:
-        del multi_selected[message.from_user.id]
+    # Cleanup
+    await db.del_temp(uid)
+    if uid in multi_selected:
+        del multi_selected[uid]

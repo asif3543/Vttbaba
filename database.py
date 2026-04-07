@@ -89,7 +89,15 @@ class Database:
 
     # ---------- Temp storage (for multi-step operations) ----------
     async def save_temp(self, user_id: int, data: dict):
-        await self.temp.update_one({"_id": user_id}, {"$set": data}, upsert=True)
+    old = await self.temp.find_one({"_id": user_id}) or {}
+    old.update(data)
+
+    await self.temp.update_one(
+        {"_id": user_id},
+        {"$set": old},
+        upsert=True
+    )
+    
 
     async def get_temp(self, user_id: int):
         return await self.temp.find_one({"_id": user_id})

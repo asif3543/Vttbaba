@@ -115,7 +115,9 @@ async def confirm_post(message: Message):
         ep_param = temp.get("episode")
         btn_text = f"🎬 Watch Episode {ep_param}"
 
-    deep_link = f"https://t.me/{BOT_USERNAME}?start=ep_{ep_param}"
+    # BOT_USERNAME ko clean kiya taaki @ ka issue na aaye
+    clean_bot_username = BOT_USERNAME.replace("@", "")
+    deep_link = f"https://t.me/{clean_bot_username}?start=ep_{ep_param}"
     
     button = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=btn_text, url=deep_link)]])
     

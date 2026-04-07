@@ -35,22 +35,18 @@ async def get_unjoined_channels(bot, uid):
 async def start_cmd(message: Message):
     uid = message.from_user.id
     
-    # Ban Check
     if await db.is_banned(uid):
         await message.reply("❌ You are banned from using this bot.")
         return
 
-    # Deep Link Check
     if message.text and " " in message.text:
         arg = message.text.split(" ", 1)[1]
 
-        # 1. First time click from Channel (ep_)
         if arg.startswith("ep_"):
             ep = arg.replace("ep_", "")
             await handle_new_request(message, ep)
             return
             
-        # 2. After solving shortner (res_)
         elif arg.startswith("res_"):
             parts = arg.replace("res_", "").rsplit("_", 1)
             if len(parts) == 2:
@@ -63,10 +59,9 @@ async def start_cmd(message: Message):
                     await message.reply("❌ Invalid or expired link! Please click the button from the channel again.")
             return
 
-    # Normal Start Command
     text = (
-        "🤖 **Bot is alive!**\n\n"
-        "📌 **Admin Commands:**\n"
+        "🤖 <b>Bot is alive!</b>\n\n"
+        "📌 <b>Admin Commands:</b>\n"
         "/post - Upload new post\n"
         "/send - Send to single channel\n"
         "/sendmorechannel - Send to multiple channels\n"
@@ -77,25 +72,22 @@ async def start_cmd(message: Message):
         "/removepri - Remove premium & ban\n"
         "/forcesub - Add force subscribe channel\n"
     )
-    await message.reply(text, parse_mode="Markdown")
+    await message.reply(text, parse_mode="HTML")
 
 # ================= NEW REQUEST (GIVE SHORTLINK) =================
 async def handle_new_request(message: Message, ep: str):
     uid = message.from_user.id
     
-    # Premium check
     if await db.is_premium(uid):
         print(f"⭐ Premium user {uid} accessing direct")
         await send_episode_direct(message, ep)
         return
 
-    # Force sub check
     not_joined = await get_unjoined_channels(message.bot, uid)
     if not_joined:
         await ask_for_fsub(message, not_joined, f"ep_{ep}")
         return
 
-    # Generate Shortner Flow
     msg = await message.reply("⏳ Please wait, generating your secure link...")
     hash_val = generate_hash(uid, ep)
     original_url = f"https://t.me/{BOT_USERNAME}?start=res_{ep}_{hash_val}"
@@ -112,19 +104,18 @@ async def handle_new_request(message: Message, ep: str):
                 short_url = temp
                 break
 
+    # Yahan Markdown ki jagah HTML use kiya hai taaki underscore (_) ki wajah se crash na ho
     await msg.edit_text(
-        f"🔗 **Solve this shortner to get the episode:**\n\n"
+        f"🔗 <b>Solve this shortner to get the episode:</b>\n\n"
         f"👉 {short_url}\n\n"
-        f"⚠️ *After solving, you will directly receive the file here.*",
-        parse_mode="Markdown",
-        disable_web_page_preview=True
+        f"⚠️ <i>After solving, you will directly receive the file here.</i>",
+        parse_mode="HTML"
     )
 
 # ================= RESOLVED REQUEST (GIVE FILE) =================
 async def handle_resolved_request(message: Message, ep: str):
     uid = message.from_user.id
     
-    # Final check if user left channel while solving
     not_joined = await get_unjoined_channels(message.bot, uid)
     if not_joined:
         hash_val = generate_hash(uid, ep)
@@ -138,7 +129,6 @@ async def send_episode_direct(message: Message, ep: str):
     uid = message.from_user.id
     
     if "-" in ep:
-        # BATCH SEND
         try:
             start_str, end_str = ep.split("-")
             start_ep, end_ep = int(start_str), int(end_str)
@@ -154,7 +144,7 @@ async def send_episode_direct(message: Message, ep: str):
                 if msg_id:
                     try:
                         await message.bot.copy_message(uid, STORAGE_CHANNEL_ID, msg_id)
-                        await asyncio.sleep(0.5) # Flood wait rokne ke liye
+                        await asyncio.sleep(0.5) 
                     except Exception as e:
                         print(f"❌ Failed to send {ep_num}: {e}")
                 else:
@@ -162,7 +152,6 @@ async def send_episode_direct(message: Message, ep: str):
         except Exception as e:
             await message.reply("❌ Invalid batch range.")
     else:
-        # SINGLE SEND
         post = await db.get_post_by_episode(ep)
         if not post:
             await message.reply("❌ Episode not found.")
@@ -180,7 +169,7 @@ async def ask_for_fsub(message: Message, not_joined: list, callback_payload: str
     buttons.append([InlineKeyboardButton(text="✅ Try Again", url=f"https://t.me/{BOT_USERNAME}?start={callback_payload}")])
     
     await message.reply(
-        "❌ **You must join our channels first!**\nJoin below and click Try Again.",
+        "❌ <b>You must join our channels first!</b>\nJoin below and click Try Again.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )

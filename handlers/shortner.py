@@ -1,4 +1,5 @@
 import aiohttp
+import json
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -18,32 +19,34 @@ class ShortnerState(StatesGroup):
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
-# ================= MAKE SHORTLINK =================
+# ================= MAKE SHORTLINK SAFE API CALL =================
 async def make_shortlink(shortner: dict, original_url: str) -> str:
     api_url = shortner.get("url")
     api_key = shortner.get("api")
     if not api_url or not api_key: return original_url
 
     encoded_url = quote(original_url, safe="")
-    timeout_obj = aiohttp.ClientTimeout(total=10)
-
+    
     try:
         async with aiohttp.ClientSession() as session:
-            # Most common GET method (Adlinkfly)
             get_url = f"{api_url}?api={api_key}&url={encoded_url}"
-            async with session.get(get_url, timeout=timeout_obj) as resp:
-                if resp.status == 200:
-                    try:
-                        data = await resp.json()
-                        short = (data.get("shortenedUrl") or data.get("short_url") or data.get("link") or data.get("result"))
-                        if short and short.startswith("http"):
-                            return short
-                    except:
-                        text = await resp.text()
-                        if text.startswith("http"):
-                            return text.strip()
+            # Sirf 10 seconds tak wait karega, uske baad timeout ho jayega
+            async with session.get(get_url, timeout=10) as resp:
+                text = await resp.text()
+                
+                try:
+                    # Agar JSON data return hua
+                    data = json.loads(text)
+                    short = (data.get("shortenedUrl") or data.get("short_url") or data.get("link") or data.get("result"))
+                    if short and short.startswith("http"):
+                        return short
+                except:
+                    # Agar plain text return hua
+                    if text.startswith("http"):
+                        return text.strip()
     except Exception as e:
-        print(f"❌ Shortner failed: {e}")
+        print(f"❌ Shortner Error: {e}")
+        
     return original_url
 
 # ================= ADD SHORTNER =================

@@ -8,88 +8,118 @@ from database import db
 
 router = Router()
 
-# ---------- FSM States ----------
+# ---------- FSM ----------
 class FSubState(StatesGroup):
     waiting_forward = State()
 
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
-# ---------- /forcesub COMMAND ----------
+# =========================
+# /forcesub
+# =========================
 @router.message(Command("forcesub"))
 async def forcesub_cmd(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    await message.reply("📢 Please forward any message from the channel you want to force subscribe.\n\nMake sure I am admin in that channel.")
+    await message.reply(
+        "📢 Forward any message from the channel.\n"
+        "Make sure bot is ADMIN there."
+    )
     await state.set_state(FSubState.waiting_forward)
 
-# ---------- RECEIVE FORWARDED MESSAGE ----------
+# =========================
+# RECEIVE FORWARD
+# =========================
 @router.message(FSubState.waiting_forward)
 async def fsub_forward_received(message: Message, state: FSMContext):
     if not message.forward_from_chat:
-        await message.reply("❌ Please forward a message from a channel (not a user or group).")
+        await message.reply("❌ Forward a message from a channel.")
         return
 
     chat = message.forward_from_chat
     channel_id = chat.id
     channel_name = chat.title or str(channel_id)
-    # Try to get channel username or create invite link
-    channel_link = f"https://t.me/{chat.username}" if chat.username else None
 
-    if not channel_link:
-        # Try to create an invite link (bot needs admin rights)
-        try:
-            invite_link = await message.bot.create_chat_invite_link(channel_id, member_limit=1)
-            channel_link = invite_link.invite_link
-        except:
-            channel_link = f"https://t.me/c/{str(channel_id)[4:]}"  # fallback (may not work)
-
-    # Optional: verify bot is admin
+    # ================= ADMIN CHECK
     try:
         bot_member = await message.bot.get_chat_member(channel_id, message.bot.id)
         if bot_member.status not in ["administrator", "creator"]:
-            await message.reply("⚠️ I am not admin in that channel. Please make me admin and try again.")
+            await message.reply("⚠️ Bot must be ADMIN first.")
             return
     except:
-        await message.reply("❌ Cannot verify admin status. Make sure I am admin and the channel is public/accessible.")
+        await message.reply("❌ Cannot access channel.")
         return
 
-    # Save to database
+    # ================= CREATE LINK
+    channel_link = None
+    if chat.username:
+        channel_link = f"https://t.me/{chat.username}"
+    else:
+        try:
+            invite = await message.bot.create_chat_invite_link(channel_id)
+            channel_link = invite.invite_link
+        except:
+            channel_link = None
+
+    if not channel_link:
+        await message.reply("❌ Failed to create invite link.")
+        return
+
+    # ================= SAVE FORCE SUB
     await db.add_fsub(channel_id, channel_name, channel_link)
-    await message.reply(f"✅ Force-subscribe channel added successfully!\n\n📢 {channel_name}\n🔗 {channel_link}")
+
+    # ================= ALSO SAVE CHANNEL (IMPORTANT FIX)
+    await db.add_channel(channel_id, channel_name)
+
+    await message.reply(
+        f"✅ Channel added successfully!\n\n"
+        f"📢 {channel_name}\n"
+        f"🔗 {channel_link}"
+    )
     await state.clear()
 
-# ---------- OPTIONAL: LIST FORCE SUB CHANNELS ----------
+# =========================
+# LIST CHANNELS
+# =========================
 @router.message(Command("fsub_list"))
 async def list_fsub(message: Message):
     if not is_admin(message.from_user.id):
         return
     fsubs = await db.get_fsub()
     if not fsubs:
-        await message.reply("📭 No force-subscribe channels configured.")
+        await message.reply("📭 No force-sub channels.")
         return
     text = "📢 **Force Subscribe Channels:**\n\n"
     for idx, ch in enumerate(fsubs, 1):
-        text += f"{idx}. {ch['name']}\n   {ch['link']}\n\n"
+        text += f"{idx}. {ch['name']}\n{ch['link']}\n\n"
     await message.reply(text, parse_mode="Markdown")
 
-# ---------- OPTIONAL: REMOVE FORCE SUB CHANNEL ----------
+# =========================
+# REMOVE CHANNEL
+# =========================
 @router.message(Command("fsub_remove"))
 async def remove_fsub_cmd(message: Message):
     if not is_admin(message.from_user.id):
         return
     fsubs = await db.get_fsub()
     if not fsubs:
-        await message.reply("No force-sub channels to remove.")
+        await message.reply("❌ No channels found.")
         return
     keyboard = []
     for ch in fsubs:
-        keyboard.append([InlineKeyboardButton(text=ch['name'], callback_data=f"fsub_rem_{ch['_id']}")])
-    await message.reply("Select channel to remove:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+        keyboard.append([
+            InlineKeyboardButton(text=ch["name"], callback_data=f"fsub_rem_{ch['_id']}")
+        ])
+    await message.reply(
+        "Select channel to remove:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
 
 @router.callback_query(F.data.startswith("fsub_rem_"))
 async def confirm_remove_fsub(callback: CallbackQuery):
     ch_id = int(callback.data.split("_")[2])
     await db.fsub.delete_one({"_id": ch_id})
-    await callback.message.reply("✅ Force-sub channel removed.")
+    await db.channels.delete_one({"_id": ch_id})
+    await callback.message.reply("✅ Channel removed.")
     await callback.answer()

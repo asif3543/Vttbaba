@@ -15,15 +15,15 @@ def is_admin(uid):
 # =========================
 @router.message(Command("start"))
 async def start_cmd(message: Message):
-    # Deep link detect
-    if " " in message.text:
+    # Detect deep link
+    if message.text and " " in message.text:
         arg = message.text.split(" ", 1)[1]
         if arg.startswith("ep_"):
             episode_param = arg.replace("ep_", "")
             await process_episode_request(message, episode_param)
             return
 
-    # Normal start message
+    # Normal start
     text = (
         "🤖 Bot is alive!\n\n"
         "📌 **Admin Commands:**\n"
@@ -44,6 +44,7 @@ async def start_cmd(message: Message):
 # =========================
 async def process_episode_request(message: Message, episode_param: str):
     uid = message.from_user.id
+    print(f"📥 Episode Request: {episode_param} from user {uid}")
 
     # BAN CHECK
     if await db.is_banned(uid):
@@ -52,6 +53,7 @@ async def process_episode_request(message: Message, episode_param: str):
 
     # PREMIUM CHECK
     if await db.is_premium(uid):
+        print("⭐ Premium user detected")
         await send_episode_direct(message, episode_param)
         return
 
@@ -78,7 +80,7 @@ async def process_episode_request(message: Message, episode_param: str):
         )
         return
 
-    # NORMAL USER (SHORTNER FLOW)
+    # SHORTNER FLOW
     shortners = await db.get_shortners()
     if not shortners:
         await message.reply("❌ No shortner configured.")
@@ -88,14 +90,16 @@ async def process_episode_request(message: Message, episode_param: str):
     random.shuffle(shortners)
     original_url = f"https://t.me/{BOT_USERNAME}?start=ep_{episode_param}"
     short_url = None
+
     for s in shortners:
         try:
             temp = await make_shortlink(s, original_url)
             if temp and temp.startswith("http"):
                 short_url = temp
+                print(f"✅ Short URL generated: {short_url}")
                 break
         except Exception as e:
-            print("Shortner failed:", e)
+            print(f"❌ Shortner failed: {e}")
 
     if not short_url:
         await message.reply("❌ Shortner failed. Try again later.")
@@ -111,6 +115,7 @@ async def process_episode_request(message: Message, episode_param: str):
 # =========================
 async def send_episode_direct(message: Message, episode_param: str):
     uid = message.from_user.id
+    print(f"📤 Sending episode directly to premium user {uid}: {episode_param}")
 
     # BATCH RANGE
     if "-" in episode_param:
@@ -127,11 +132,13 @@ async def send_episode_direct(message: Message, episode_param: str):
                 if msg_id:
                     try:
                         await message.bot.copy_message(uid, STORAGE_CHANNEL_ID, msg_id)
+                        print(f"✅ Sent episode {ep_num}")
                     except Exception as e:
-                        print(f"Episode send fail {ep_num}", e)
+                        print(f"❌ Episode send fail {ep_num}: {e}")
                 else:
                     await message.reply(f"⚠️ Episode {ep_num} missing.")
-        except:
+        except Exception as e:
+            print(f"Batch range error: {e}")
             await message.reply("❌ Invalid batch range.")
         return
 
@@ -143,6 +150,7 @@ async def send_episode_direct(message: Message, episode_param: str):
 
     try:
         await message.bot.copy_message(uid, STORAGE_CHANNEL_ID, post["storage_msg_id"])
+        print("✅ Single episode sent")
     except Exception as e:
         await message.reply(f"❌ Failed to send episode:\n{e}")
 

@@ -19,33 +19,35 @@ class ShortnerState(StatesGroup):
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
-# ================= MAKE SHORTLINK SAFE API CALL =================
+# ================= MAKE SHORTLINK =================
 async def make_shortlink(shortner: dict, original_url: str) -> str:
     api_url = shortner.get("url")
     api_key = shortner.get("api")
     if not api_url or not api_key: return original_url
 
+    # Ensuring original link is properly URL encoded
     encoded_url = quote(original_url, safe="")
     
     try:
         async with aiohttp.ClientSession() as session:
+            # Most common method for Adlinkfly, GP Links, etc.
             get_url = f"{api_url}?api={api_key}&url={encoded_url}"
-            # Sirf 10 seconds tak wait karega, uske baad timeout ho jayega
-            async with session.get(get_url, timeout=10) as resp:
+            async with session.get(get_url, timeout=15) as resp:
                 text = await resp.text()
                 
                 try:
-                    # Agar JSON data return hua
                     data = json.loads(text)
-                    short = (data.get("shortenedUrl") or data.get("short_url") or data.get("link") or data.get("result"))
-                    if short and short.startswith("http"):
-                        return short
-                except:
-                    # Agar plain text return hua
-                    if text.startswith("http"):
+                    # Checking successful response
+                    if data.get("status") == "success" or data.get("shortenedUrl"):
+                        short = data.get("shortenedUrl") or data.get("short_url") or data.get("link")
+                        if short and short.startswith("http"):
+                            return short
+                except json.JSONDecodeError:
+                    # Fallback if API returns plain text link instead of JSON
+                    if text.strip().startswith("http"):
                         return text.strip()
     except Exception as e:
-        print(f"❌ Shortner Error: {e}")
+        print(f"❌ Shortner API Request Failed: {e}")
         
     return original_url
 
@@ -53,7 +55,12 @@ async def make_shortlink(shortner: dict, original_url: str) -> str:
 @router.message(Command("adshort"))
 async def add_shortner_cmd(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
-    await message.reply("🔗 Send API endpoint URL (e.g., https://your-shortener.com/api)")
+    await message.reply(
+        "🔗 Send API endpoint URL\n\n"
+        "⚠️ **IMPORTANT**: Make sure it ends with `/api`\n"
+        "✅ Example: `https://gplinks.in/api`",
+        parse_mode="Markdown"
+    )
     await state.set_state(ShortnerState.waiting_url)
 
 @router.message(ShortnerState.waiting_url)

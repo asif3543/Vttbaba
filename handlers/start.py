@@ -42,11 +42,13 @@ async def start_cmd(message: Message):
     if message.text and " " in message.text:
         arg = message.text.split(" ", 1)[1]
 
+        # 1. NEW REQUEST (Shortner generate karega)
         if arg.startswith("ep_"):
             ep = arg.replace("ep_", "")
             await handle_new_request(message, ep)
             return
             
+        # 2. RESOLVED REQUEST (Shortner solve hone ke baad file dega)
         elif arg.startswith("res_"):
             parts = arg.replace("res_", "").rsplit("_", 1)
             if len(parts) == 2:
@@ -56,7 +58,7 @@ async def start_cmd(message: Message):
                 if received_hash == expected_hash:
                     await handle_resolved_request(message, ep)
                 else:
-                    await message.reply("❌ Invalid or expired link! Please click the button from the channel again.")
+                    await message.reply("❌ Invalid or expired link! Please generate a new link from the channel.")
             return
 
     text = (
@@ -90,6 +92,8 @@ async def handle_new_request(message: Message, ep: str):
 
     msg = await message.reply("⏳ Please wait, generating your secure link...")
     hash_val = generate_hash(uid, ep)
+    
+    # Ye wo link hai jo shortner ke andar chhupegi (Original deep link)
     original_url = f"https://t.me/{BOT_USERNAME}?start=res_{ep}_{hash_val}"
     
     shortners = await db.get_shortners()
@@ -104,12 +108,22 @@ async def handle_new_request(message: Message, ep: str):
                 short_url = temp
                 break
 
-    # Yahan Markdown ki jagah HTML use kiya hai taaki underscore (_) ki wajah se crash na ho
+    # STRICT CHECK: Agar shortner fail ho gaya, toh direct link mat do!
+    if short_url == original_url and shortners:
+        await msg.edit_text(
+            "❌ <b>Shortner API Error!</b>\n\n"
+            "⚠️ Bot shortlink generate nahi kar paya kyunki API Key ya URL galat hai.\n"
+            "👉 Admin: Please remove the current shortner using /removeshot and add it again carefully. Ensure URL ends with <code>/api</code>",
+            parse_mode="HTML"
+        )
+        return
+
     await msg.edit_text(
         f"🔗 <b>Solve this shortner to get the episode:</b>\n\n"
         f"👉 {short_url}\n\n"
         f"⚠️ <i>After solving, you will directly receive the file here.</i>",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        disable_web_page_preview=True
     )
 
 # ================= RESOLVED REQUEST (GIVE FILE) =================
@@ -135,10 +149,10 @@ async def send_episode_direct(message: Message, ep: str):
             batch_data = await db.get_batch_range(start_ep, end_ep)
             
             if not batch_data:
-                await message.reply("❌ No episodes found.")
+                await message.reply("❌ No episodes found in database.")
                 return
                 
-            await message.reply("📤 Sending your episodes...")
+            await message.reply("📤 Sending your episodes in batch...")
             for ep_num in range(start_ep, end_ep + 1):
                 msg_id = batch_data.get(ep_num)
                 if msg_id:
@@ -150,7 +164,7 @@ async def send_episode_direct(message: Message, ep: str):
                 else:
                     await message.reply(f"⚠️ Episode {ep_num} missing.")
         except Exception as e:
-            await message.reply("❌ Invalid batch range.")
+            await message.reply("❌ Invalid batch range format.")
     else:
         post = await db.get_post_by_episode(ep)
         if not post:
@@ -169,7 +183,7 @@ async def ask_for_fsub(message: Message, not_joined: list, callback_payload: str
     buttons.append([InlineKeyboardButton(text="✅ Try Again", url=f"https://t.me/{BOT_USERNAME}?start={callback_payload}")])
     
     await message.reply(
-        "❌ <b>You must join our channels first!</b>\nJoin below and click Try Again.",
+        "❌ <b>You must join our channels first to proceed!</b>\nJoin below and click Try Again.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         parse_mode="HTML"
     )

@@ -28,10 +28,8 @@ async def post_cmd(message: Message, state: FSMContext):
 @router.message(PostState.waiting_post)
 async def receive_post(message: Message, state: FSMContext):
     if message.photo or message.video or message.document or message.forward_from_chat:
-        # POSTER GOES TO STORAGE CHANNEL
         stored = await message.bot.forward_message(STORAGE_CHANNEL_ID, message.chat.id, message.message_id)
         await db.save_temp(message.from_user.id, {"storage_msg_id": stored.message_id})
-        
         await message.reply("✅ Poster received.\n\nNow, send:\n`single link` OR `batch link`", parse_mode="Markdown")
         await state.set_state(PostState.waiting_link_type)
     else:
@@ -49,16 +47,14 @@ async def link_type(message: Message, state: FSMContext):
         await message.reply("🎬 Forward the single episode file.")
         await state.set_state(PostState.waiting_single_ep)
     else:
-        await message.reply("❌ Invalid choice. Type `single link` or `batch link`.")
+        await message.reply("❌ Invalid choice.")
 
 @router.message(PostState.waiting_single_ep)
 async def single_ep(message: Message, state: FSMContext):
     temp = await db.get_temp(message.from_user.id)
     if message.photo or message.video or message.document or message.forward_from_chat:
-        # EPISODE GOES TO EPISODE CHANNEL
         stored_ep = await message.bot.forward_message(EPISODE_CHANNEL_ID, message.chat.id, message.message_id)
         await db.save_temp(message.from_user.id, {"episode_msg_id": stored_ep.message_id})
-        
         await message.reply("✅ Episode saved in Episode Base.\nSend episode number (example: `07`)")
         return
     if message.text:
@@ -72,7 +68,6 @@ async def batch_ep(message: Message, state: FSMContext):
     temp = await db.get_temp(message.from_user.id)
     episodes = temp.get("episodes", [])
     if message.photo or message.video or message.document or message.forward_from_chat:
-        # BATCH EPISODES GO TO EPISODE CHANNEL
         stored = await message.bot.forward_message(EPISODE_CHANNEL_ID, message.chat.id, message.message_id)
         episodes.append(stored.message_id)
         await db.save_temp(message.from_user.id, {"episodes": episodes})
@@ -80,7 +75,7 @@ async def batch_ep(message: Message, state: FSMContext):
         return
     if message.text and message.text.lower() == "done":
         if len(episodes) < 2:
-            await message.reply("❌ Minimum 2 episodes required for batch.")
+            await message.reply("❌ Minimum 2 episodes required.")
             return
         await message.reply("Send range (example: `05-15`)")
         await state.set_state(PostState.waiting_batch_range)
@@ -94,10 +89,11 @@ async def batch_range(message: Message, state: FSMContext):
         s, e = rng.split("-")
         start, end = int(s), int(e)
         if end - start + 1 != len(episodes_ids):
-            await message.reply(f"❌ Range count mismatch! You sent {len(episodes_ids)} files but range says {start} to {end}.")
+            await message.reply("❌ Range count mismatch!")
             return
         for i, ep in enumerate(range(start, end + 1)):
-            await db.add_batch_episode(ep, episodes_ids[i])
+            # ID aur Naya Channel dono save ho rahe hain
+            await db.add_batch_episode(ep, episodes_ids[i], EPISODE_CHANNEL_ID)
     except Exception:
         await message.reply("❌ Invalid range format.")
         return
@@ -128,19 +124,14 @@ async def confirm_post(message: Message):
     await db.save_post({
         "storage_msg_id": temp.get("storage_msg_id"),
         "episode_msg_id": temp.get("episode_msg_id"),
+        "episode_chat_id": EPISODE_CHANNEL_ID if temp.get("episode_msg_id") else STORAGE_CHANNEL_ID,
         "type": temp.get("type"),
         "episode": temp.get("episode"),
         "batch_range": temp.get("batch_range"),
         "reply_markup": button.model_dump()
     })
 
-    # Show preview to Admin
-    await message.bot.copy_message(
-        message.chat.id, 
-        STORAGE_CHANNEL_ID, 
-        temp["storage_msg_id"], 
-        reply_markup=button
-    )
+    await message.bot.copy_message(message.chat.id, STORAGE_CHANNEL_ID, temp["storage_msg_id"], reply_markup=button)
 
     action_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Send (Single Channel)", callback_data="cmd_send")],

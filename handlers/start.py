@@ -4,7 +4,7 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import OWNER_ID, ALLOWED_USERS, BOT_USERNAME, STORAGE_CHANNEL_ID, SECRET_HASH
+from config import OWNER_ID, ALLOWED_USERS, BOT_USERNAME, STORAGE_CHANNEL_ID, EPISODE_CHANNEL_ID, SECRET_HASH
 from database import db
 from .shortner import make_shortlink
 
@@ -13,7 +13,7 @@ router = Router()
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
 
-# ================= HASH GENERATOR (BYPASS ROKNE KE LIYE) =================
+# ================= HASH GENERATOR =================
 def generate_hash(uid: int, episode: str) -> str:
     return hashlib.md5(f"{uid}_{episode}_{SECRET_HASH}".encode()).hexdigest()[:10]
 
@@ -39,17 +39,14 @@ async def start_cmd(message: Message):
         await message.reply("❌ You are banned from using this bot.")
         return
 
-    # DEEP LINK CHECK (Jab Button ya Shortener se aaye)
     if message.text and " " in message.text:
         arg = message.text.split(" ", 1)[1].strip()
 
-        # Pehli baar Channel Button se click kare
         if arg.startswith("ep_"):
             ep = arg.replace("ep_", "")
             await handle_new_request(message, ep)
             return
             
-        # Shortner solve karne ke baad wapas aaye
         elif arg.startswith("res_"):
             parts = arg.replace("res_", "").rsplit("_", 1)
             if len(parts) == 2:
@@ -61,17 +58,13 @@ async def start_cmd(message: Message):
                 else:
                     await message.reply("❌ <b>Invalid or expired link!</b>\nPlease click the button from the channel again.", parse_mode="HTML")
             else:
-                await message.reply("❌ <b>Broken Link!</b>\nTelegram couldn't process the link properly.", parse_mode="HTML")
+                await message.reply("❌ <b>Broken Link!</b>", parse_mode="HTML")
             return
-        
-        # Agar start param kuch aur aaya ho jo match na kare
         else:
-            await message.reply("⚠️ <b>Invalid Command!</b> Please get the latest link from our channel.", parse_mode="HTML")
+            await message.reply("⚠️ <b>Invalid Command!</b>", parse_mode="HTML")
             return
 
-    # NORMAL START COMMAND (Bina kisi link/data ke)
     if is_admin(uid):
-        # Sirf Admin ko hi command list dikhegi
         text = (
             "🤖 <b>Bot is alive!</b>\n\n"
             "📌 <b>Admin Commands:</b>\n"
@@ -90,10 +83,9 @@ async def start_cmd(message: Message):
         )
         await message.reply(text, parse_mode="HTML")
     else:
-        # Aam user ko sirf welcome message dikhega
-        await message.reply("👋 <b>Welcome!</b>\n\nPlease use the buttons provided in our main channel to download or watch episodes.", parse_mode="HTML")
+        await message.reply("👋 <b>Welcome!</b>\nPlease use the buttons provided in our main channel to download episodes.", parse_mode="HTML")
 
-# ================= NEW REQUEST (GIVE SHORTLINK) =================
+# ================= NEW REQUEST =================
 async def handle_new_request(message: Message, ep: str):
     uid = message.from_user.id
     
@@ -109,7 +101,6 @@ async def handle_new_request(message: Message, ep: str):
     msg = await message.reply("⏳ Please wait, generating your secure link...")
     hash_val = generate_hash(uid, ep)
     
-    # Bot username se '@' hatana zaroori hai warna deep link toot jati hai
     clean_bot_username = BOT_USERNAME.replace("@", "")
     original_url = f"https://t.me/{clean_bot_username}?start=res_{ep}_{hash_val}"
     
@@ -126,12 +117,7 @@ async def handle_new_request(message: Message, ep: str):
                 break
 
     if short_url == original_url and shortners:
-        await msg.edit_text(
-            "❌ <b>Shortner API Error!</b>\n\n"
-            "⚠️ Bot could not generate the shortlink.\n"
-            "👉 Admin: Please check your shortner URL and API token.",
-            parse_mode="HTML"
-        )
+        await msg.edit_text("❌ <b>Shortner API Error!</b>\nAdmin: Check API.", parse_mode="HTML")
         return
 
     await msg.edit_text(
@@ -142,7 +128,7 @@ async def handle_new_request(message: Message, ep: str):
         disable_web_page_preview=True
     )
 
-# ================= RESOLVED REQUEST (GIVE FILE) =================
+# ================= RESOLVED REQUEST =================
 async def handle_resolved_request(message: Message, ep: str):
     uid = message.from_user.id
     
@@ -154,7 +140,7 @@ async def handle_resolved_request(message: Message, ep: str):
         
     await send_episode_direct(message, ep)
 
-# ================= SEND EPISODE (SINGLE/BATCH) =================
+# ================= SEND EPISODE =================
 async def send_episode_direct(message: Message, ep: str):
     uid = message.from_user.id
     
@@ -173,7 +159,8 @@ async def send_episode_direct(message: Message, ep: str):
                 msg_id = batch_data.get(ep_num)
                 if msg_id:
                     try:
-                        await message.bot.copy_message(uid, STORAGE_CHANNEL_ID, msg_id)
+                        # AB BATCH VIDEO EPISODE CHANNEL SE JAYEGI
+                        await message.bot.copy_message(uid, EPISODE_CHANNEL_ID, msg_id)
                         await asyncio.sleep(0.5) 
                     except Exception as e:
                         print(f"❌ Failed to send {ep_num}: {e}")
@@ -189,7 +176,13 @@ async def send_episode_direct(message: Message, ep: str):
             await message.reply("❌ Episode not found.")
             return
         try:
-            await message.bot.copy_message(uid, STORAGE_CHANNEL_ID, post["storage_msg_id"])
+            # AB SINGLE VIDEO EPISODE CHANNEL SE JAYEGI
+            actual_video_id = post.get("episode_msg_id")
+            if not actual_video_id:
+                await message.reply("❌ Error: Original video not found for this post.")
+                return
+                
+            await message.bot.copy_message(uid, EPISODE_CHANNEL_ID, actual_video_id)
         except Exception as e:
             await message.reply(f"❌ Failed to send episode: {e}")
 

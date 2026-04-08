@@ -1,4 +1,4 @@
-from aiogram import Router
+from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
@@ -10,6 +10,7 @@ router = Router()
 
 class PremiumState(StatesGroup):
     waiting_id = State()
+    waiting_confirm = State() # Naya state add kiya taaki bot atke nahi
 
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
@@ -27,21 +28,29 @@ async def premium_id_received(message: Message, state: FSMContext):
     except ValueError:
         await message.reply("❌ Invalid ID. Please send a numeric user ID.")
         return
+        
     await state.update_data(premium_uid=uid)
+    
+    # YAHI MISSING THA: State aage badhana zaroori tha
+    await state.set_state(PremiumState.waiting_confirm)
+    
     await message.reply(f"✅ User ID `{uid}` will get premium for **5 Minutes**.\nType `/huhu` to confirm.", parse_mode="Markdown")
 
 @router.message(Command("huhu"))
 async def confirm_premium(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
+    
     data = await state.get_data()
     uid = data.get("premium_uid")
+    
     if not uid:
         await message.reply("❌ No pending premium. Use `/addpri` first.")
         return
+        
     expiry = await db.add_premium(uid)
-    
-    # Expiry me time bhi show karega taaki 5 minute track kar sako
     await message.reply(f"✅ Premium added to `{uid}` 🪄\n📅 Valid until `{expiry.strftime('%Y-%m-%d %H:%M:%S')} (UTC)`", parse_mode="Markdown")
+    
+    # Process pura hone ke baad bot state clear kar dega
     await state.clear()
 
 @router.message(Command("removepri"))
@@ -68,7 +77,6 @@ async def show_premium_list(message: Message):
         return
     text = "🌟 **Active Premium Users:**\n\n"
     for u in users:
-        # Exact time dikhayega list me
         expiry_str = u['expiry'].strftime('%Y-%m-%d %H:%M:%S')
         text += f"• `{u['_id']}` – expires {expiry_str} (UTC)\n"
     await message.reply(text, parse_mode="Markdown")

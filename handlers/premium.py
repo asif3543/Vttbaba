@@ -17,7 +17,7 @@ def is_admin(uid):
 @router.message(Command("addpri"))
 async def add_premium_cmd(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
-    await message.reply("💰 Send Telegram user ID to add premium (28 days).\nExample: `585447854`", parse_mode="Markdown")
+    await message.reply("💰 Send Telegram user ID to add premium (TESTING: 5 Minutes).\nExample: `585447854`", parse_mode="Markdown")
     await state.set_state(PremiumState.waiting_id)
 
 @router.message(PremiumState.waiting_id)
@@ -28,7 +28,7 @@ async def premium_id_received(message: Message, state: FSMContext):
         await message.reply("❌ Invalid ID. Please send a numeric user ID.")
         return
     await state.update_data(premium_uid=uid)
-    await message.reply(f"✅ User ID `{uid}` will get premium for 28 days.\nType `/huhu` to confirm.", parse_mode="Markdown")
+    await message.reply(f"✅ User ID `{uid}` will get premium for **5 Minutes**.\nType `/huhu` to confirm.", parse_mode="Markdown")
 
 @router.message(Command("huhu"))
 async def confirm_premium(message: Message, state: FSMContext):
@@ -39,7 +39,9 @@ async def confirm_premium(message: Message, state: FSMContext):
         await message.reply("❌ No pending premium. Use `/addpri` first.")
         return
     expiry = await db.add_premium(uid)
-    await message.reply(f"✅ Premium added to `{uid}` 🪄\n📅 Valid until `{expiry.strftime('%Y-%m-%d')}`", parse_mode="Markdown")
+    
+    # Expiry me time bhi show karega taaki 5 minute track kar sako
+    await message.reply(f"✅ Premium added to `{uid}` 🪄\n📅 Valid until `{expiry.strftime('%Y-%m-%d %H:%M:%S')} (UTC)`", parse_mode="Markdown")
     await state.clear()
 
 @router.message(Command("removepri"))
@@ -66,6 +68,7 @@ async def show_premium_list(message: Message):
         return
     text = "🌟 **Active Premium Users:**\n\n"
     for u in users:
-        expiry_str = u['expiry'].strftime('%Y-%m-%d')
-        text += f"• `{u['_id']}` – expires {expiry_str}\n"
+        # Exact time dikhayega list me
+        expiry_str = u['expiry'].strftime('%Y-%m-%d %H:%M:%S')
+        text += f"• `{u['_id']}` – expires {expiry_str} (UTC)\n"
     await message.reply(text, parse_mode="Markdown")

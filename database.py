@@ -16,8 +16,10 @@ class Database:
         self.temp = self.db.temp
         self.batch_episodes = self.db.batch_episodes
 
+    # ====== PREMIUM 5 MINUTE TEST ======
     async def add_premium(self, user_id: int):
-        expiry = datetime.utcnow() + timedelta(days=28)
+        # Testing ke liye abhi 5 minutes set kiya hai
+        expiry = datetime.utcnow() + timedelta(minutes=5)
         await self.users.update_one({"_id": user_id}, {"$set": {"premium": True, "expiry": expiry, "banned": False}}, upsert=True)
         return expiry
 
@@ -27,6 +29,8 @@ class Database:
     async def is_premium(self, user_id: int) -> bool:
         u = await self.users.find_one({"_id": user_id})
         if not u or not u.get("premium"): return False
+        
+        # Agar expiry time nikal gaya (5 minute pure ho gaye)
         if u["expiry"] < datetime.utcnow():
             await self.users.update_one({"_id": user_id}, {"$set": {"premium": False}})
             return False
@@ -39,6 +43,7 @@ class Database:
     async def get_premium_list(self):
         return await self.users.find({"premium": True, "expiry": {"$gt": datetime.utcnow()}}).to_list(100)
 
+    # ====== OTHER DB FUNCTIONS ======
     async def add_shortner(self, url: str, api: str):
         await self.shortners.insert_one({"url": url, "api": api, "active": True})
 
@@ -88,7 +93,6 @@ class Database:
                     return post
         return None
 
-    # ====== BATCH EPISODES FIX ======
     async def add_batch_episode(self, episode_number: int, storage_msg_id: int, chat_id: int = None):
         data = {"storage_msg_id": storage_msg_id}
         if chat_id:
@@ -101,7 +105,7 @@ class Database:
         async for doc in cursor:
             result[doc["episode"]] = {
                 "msg_id": doc["storage_msg_id"],
-                "chat_id": doc.get("chat_id") # Null for old posts
+                "chat_id": doc.get("chat_id") 
             }
         return result
 

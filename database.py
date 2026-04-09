@@ -16,8 +16,8 @@ class Database:
         self.batch_episodes = self.db.batch_episodes
 
     async def add_premium(self, user_id: int):
-        # 5 minutes for testing (baad me isko days=28 kar dena)
-        expiry = datetime.utcnow() + timedelta(minutes=5)
+        # Premium wapas 28 Days kar diya
+        expiry = datetime.utcnow() + timedelta(days=28)
         await self.users.update_one({"_id": user_id}, {"$set": {"premium": True, "expiry": expiry, "banned": False}}, upsert=True)
         return expiry
 
@@ -62,7 +62,6 @@ class Database:
 
     async def save_temp(self, user_id: int, data: dict):
         old = await self.temp.find_one({"_id": user_id}) or {}
-        # YAHAN ERROR THA: ID clash rokne ke liye _id ko hatana padta hai
         if "_id" in old:
             del old["_id"]
         old.update(data)
@@ -82,11 +81,8 @@ class Database:
         return await self.posts.find_one(sort=[("created_at", -1)])
 
     async def get_post_by_episode(self, episode: str):
-        # YAHAN MAIN PROBLEM THI: Bot sabse purani post de raha tha
-        # Isko "sort=[("created_at", -1)]" kar diya hai, ab sirf LATEST (nayi) post hi dega
         p = await self.posts.find_one({"episode": episode}, sort=[("created_at", -1)])
         if p: return p
-        
         async for post in self.posts.find({"batch_range": {"$exists": True}}, sort=[("created_at", -1)]):
             if "-" in post.get("batch_range", ""):
                 s, e = post["batch_range"].split("-")

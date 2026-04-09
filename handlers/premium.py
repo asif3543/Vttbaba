@@ -10,7 +10,7 @@ router = Router()
 
 class PremiumState(StatesGroup):
     waiting_id = State()
-    waiting_confirm = State() # Naya state add kiya taaki bot atke nahi
+    waiting_confirm = State()
 
 def is_admin(uid):
     return uid == OWNER_ID or uid in ALLOWED_USERS
@@ -18,7 +18,7 @@ def is_admin(uid):
 @router.message(Command("addpri"))
 async def add_premium_cmd(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
-    await message.reply("💰 Send Telegram user ID to add premium (TESTING: 5 Minutes).\nExample: `585447854`", parse_mode="Markdown")
+    await message.reply("💰 Send Telegram user ID to add premium (Valid for 28 Days).\nExample: `585447854`", parse_mode="Markdown")
     await state.set_state(PremiumState.waiting_id)
 
 @router.message(PremiumState.waiting_id)
@@ -30,16 +30,12 @@ async def premium_id_received(message: Message, state: FSMContext):
         return
         
     await state.update_data(premium_uid=uid)
-    
-    # YAHI MISSING THA: State aage badhana zaroori tha
     await state.set_state(PremiumState.waiting_confirm)
-    
-    await message.reply(f"✅ User ID `{uid}` will get premium for **5 Minutes**.\nType `/huhu` to confirm.", parse_mode="Markdown")
+    await message.reply(f"✅ User ID `{uid}` will get premium for **28 Days**.\nType `/huhu` to confirm.", parse_mode="Markdown")
 
 @router.message(Command("huhu"))
 async def confirm_premium(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
-    
     data = await state.get_data()
     uid = data.get("premium_uid")
     
@@ -48,9 +44,7 @@ async def confirm_premium(message: Message, state: FSMContext):
         return
         
     expiry = await db.add_premium(uid)
-    await message.reply(f"✅ Premium added to `{uid}` 🪄\n📅 Valid until `{expiry.strftime('%Y-%m-%d %H:%M:%S')} (UTC)`", parse_mode="Markdown")
-    
-    # Process pura hone ke baad bot state clear kar dega
+    await message.reply(f"✅ Premium added to `{uid}` 🪄\n📅 Valid until `{expiry.strftime('%Y-%m-%d')} (UTC)`", parse_mode="Markdown")
     await state.clear()
 
 @router.message(Command("removepri"))
@@ -77,6 +71,6 @@ async def show_premium_list(message: Message):
         return
     text = "🌟 **Active Premium Users:**\n\n"
     for u in users:
-        expiry_str = u['expiry'].strftime('%Y-%m-%d %H:%M:%S')
-        text += f"• `{u['_id']}` – expires {expiry_str} (UTC)\n"
+        expiry_str = u['expiry'].strftime('%Y-%m-%d')
+        text += f"• `{u['_id']}` – expires on {expiry_str}\n"
     await message.reply(text, parse_mode="Markdown")

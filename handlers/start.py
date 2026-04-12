@@ -58,7 +58,6 @@ async def start_cmd(message: Message):
                     )
                 return
                 
-            # FALLBACK FOR OLD LINKS CREATED YESTERDAY
             elif arg.startswith("res_"):
                 parts = arg.replace("res_", "").rsplit("_", 1)
                 if len(parts) == 2:
@@ -151,7 +150,6 @@ async def handle_resolved_request(message: Message, post_id: str):
 async def send_episode_direct(message: Message, post_id: str):
     uid = message.from_user.id
     
-    # Agar purani Batch Link hai ("05-15" format mein)
     if not ObjectId.is_valid(post_id) and "-" in post_id:
         try:
             start_str, end_str = post_id.split("-")
@@ -169,10 +167,9 @@ async def send_episode_direct(message: Message, post_id: str):
         except Exception:
             pass
 
-    # Nayi Unique ID wali Post
     post = await db.get_post_by_id(post_id)
     if not post:
-        await message.reply("❌ Episode not found.")
+        await message.reply("❌ Episode not found in Database.")
         return
         
     if post.get("type") == "batch":
@@ -198,9 +195,9 @@ async def send_episode_direct(message: Message, post_id: str):
             elif old_storage_id:
                 await message.bot.copy_message(uid, STORAGE_CHANNEL_ID, old_storage_id)
             else:
-                await message.reply("❌ Error: Video not found in database.")
+                await message.reply("❌ Error: Video data missing.")
         except Exception as e:
-            await message.reply(f"❌ Failed to send episode: {e}")
+            await message.reply(f"❌ <b>Bot Failed to Send the Video!</b>\n\nReason: Bot is NOT an Admin in the channel where this video is saved, or the video was deleted.\nError Code: <code>{e}</code>", parse_mode="HTML")
 
 async def ask_for_fsub(message: Message, not_joined: list, callback_payload: str):
     buttons = []

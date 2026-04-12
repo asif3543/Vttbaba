@@ -18,9 +18,9 @@ class Database:
         self.batch_episodes = self.db.batch_episodes
         self.tokens = self.db.tokens 
 
-    # ================= ANTI-BYPASS ONE-TIME TOKEN SYSTEM =================
+    # ================= ANTI-BYPASS SYSTEM =================
     async def create_verify_token(self, uid: int, post_id: str) -> str:
-        await self.tokens.delete_many({"uid": uid}) # Delete old unused tokens
+        await self.tokens.delete_many({"uid": uid}) 
         token = ''.join(random.choices(string.ascii_letters + string.digits, k=15))
         await self.tokens.insert_one({
             "token": token,
@@ -34,30 +34,38 @@ class Database:
         data = await self.tokens.find_one({"token": token, "uid": uid})
         if not data: return None
         
-        await self.tokens.delete_one({"_id": data["_id"]}) # Token Used -> Deleted permanently
+        await self.tokens.delete_one({"_id": data["_id"]}) # Delete right after use
         
         if datetime.utcnow() - data["created_at"] > timedelta(hours=24):
             return None
         return data["post_id"]
-    # =====================================================================
+    # ======================================================
 
-    # ================= NEW UNIQUE ID FINDER ==============================
+    # ================= UNIQUE ID FINDER ===================
     async def get_post_by_id(self, post_id: str):
-        # Nayi posts ke liye (Unique ID)
-        if ObjectId.is_valid(post_id):
-            return await self.posts.find_one({"_id": ObjectId(post_id)})
-        else:
-            # Purani posts ke liye (Fallback taaki purane links break na ho)
-            p = await self.posts.find_one({"episode": post_id}, sort=[("created_at", -1)])
-            if p: return p
-            async for post in self.posts.find({"batch_range": {"$exists": True}}, sort=[("created_at", -1)]):
-                if "-" in post.get("batch_range", ""):
-                    s, e = post["batch_range"].split("-")
-                    try:
-                        if int(s) <= int(post_id) <= int(e): return post
-                    except: pass
-            return None
-    # =====================================================================
+        # 1. Pehle strictly String ID check karega (NAYI POSTS)
+        p = await self.posts.find_one({"_id": post_id})
+        if p: return p
+        
+        # 2. Agar purani ObjectID hai (Pichli posts)
+        try:
+            if ObjectId.is_valid(post_id):
+                p = await self.posts.find_one({"_id": ObjectId(post_id)})
+                if p: return p
+        except: pass
+
+        # 3. Agar purana Episode Number hai (PURANE BUTTONS)
+        p = await self.posts.find_one({"episode": post_id}, sort=[("created_at", -1)])
+        if p: return p
+        
+        async for post in self.posts.find({"batch_range": {"$exists": True}}, sort=[("created_at", -1)]):
+            if "-" in post.get("batch_range", ""):
+                s, e = post["batch_range"].split("-")
+                try:
+                    if int(s) <= int(post_id) <= int(e): return post
+                except: pass
+        return None
+    # ======================================================
 
     async def add_premium(self, user_id: int):
         expiry = datetime.utcnow() + timedelta(days=28)
@@ -119,7 +127,6 @@ class Database:
         return await self.posts.find_one(sort=[("created_at", -1)])
 
     async def get_batch_range(self, start: int, end: int):
-        # Sirf purani links ke liye zaroorat padegi
         cursor = self.batch_episodes.find({"episode": {"$gte": start, "$lte": end}})
         result = {}
         async for doc in cursor:

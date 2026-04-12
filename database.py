@@ -1,3 +1,5 @@
+import random
+import string
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import MONGODB_URL, DATABASE_NAME
 from datetime import datetime, timedelta
@@ -14,9 +16,50 @@ class Database:
         self.posts = self.db.posts
         self.temp = self.db.temp
         self.batch_episodes = self.db.batch_episodes
+        self.tokens = self.db.tokens 
+
+    # ================= ANTI-BYPASS ONE-TIME TOKEN SYSTEM =================
+    async def create_verify_token(self, uid: int, post_id: str) -> str:
+        await self.tokens.delete_many({"uid": uid}) # Delete old unused tokens
+        token = ''.join(random.choices(string.ascii_letters + string.digits, k=15))
+        await self.tokens.insert_one({
+            "token": token,
+            "uid": uid,
+            "post_id": post_id,
+            "created_at": datetime.utcnow()
+        })
+        return token
+
+    async def check_verify_token(self, uid: int, token: str):
+        data = await self.tokens.find_one({"token": token, "uid": uid})
+        if not data: return None
+        
+        await self.tokens.delete_one({"_id": data["_id"]}) # Token Used -> Deleted permanently
+        
+        if datetime.utcnow() - data["created_at"] > timedelta(hours=24):
+            return None
+        return data["post_id"]
+    # =====================================================================
+
+    # ================= NEW UNIQUE ID FINDER ==============================
+    async def get_post_by_id(self, post_id: str):
+        # Nayi posts ke liye (Unique ID)
+        if ObjectId.is_valid(post_id):
+            return await self.posts.find_one({"_id": ObjectId(post_id)})
+        else:
+            # Purani posts ke liye (Fallback taaki purane links break na ho)
+            p = await self.posts.find_one({"episode": post_id}, sort=[("created_at", -1)])
+            if p: return p
+            async for post in self.posts.find({"batch_range": {"$exists": True}}, sort=[("created_at", -1)]):
+                if "-" in post.get("batch_range", ""):
+                    s, e = post["batch_range"].split("-")
+                    try:
+                        if int(s) <= int(post_id) <= int(e): return post
+                    except: pass
+            return None
+    # =====================================================================
 
     async def add_premium(self, user_id: int):
-        # Premium wapas 28 Days kar diya
         expiry = datetime.utcnow() + timedelta(days=28)
         await self.users.update_one({"_id": user_id}, {"$set": {"premium": True, "expiry": expiry, "banned": False}}, upsert=True)
         return expiry
@@ -62,8 +105,7 @@ class Database:
 
     async def save_temp(self, user_id: int, data: dict):
         old = await self.temp.find_one({"_id": user_id}) or {}
-        if "_id" in old:
-            del old["_id"]
+        if "_id" in old: del old["_id"]
         old.update(data)
         await self.temp.update_one({"_id": user_id}, {"$set": old}, upsert=True)
 
@@ -73,37 +115,15 @@ class Database:
     async def del_temp(self, user_id: int):
         await self.temp.delete_one({"_id": user_id})
 
-    async def save_post(self, data: dict):
-        data["created_at"] = datetime.utcnow()
-        await self.posts.insert_one(data)
-
     async def get_latest_post(self):
         return await self.posts.find_one(sort=[("created_at", -1)])
 
-    async def get_post_by_episode(self, episode: str):
-        p = await self.posts.find_one({"episode": episode}, sort=[("created_at", -1)])
-        if p: return p
-        async for post in self.posts.find({"batch_range": {"$exists": True}}, sort=[("created_at", -1)]):
-            if "-" in post.get("batch_range", ""):
-                s, e = post["batch_range"].split("-")
-                if int(s) <= int(episode) <= int(e):
-                    return post
-        return None
-
-    async def add_batch_episode(self, episode_number: int, storage_msg_id: int, chat_id: int = None):
-        data = {"storage_msg_id": storage_msg_id}
-        if chat_id:
-            data["chat_id"] = chat_id
-        await self.batch_episodes.update_one({"episode": episode_number}, {"$set": data}, upsert=True)
-
     async def get_batch_range(self, start: int, end: int):
+        # Sirf purani links ke liye zaroorat padegi
         cursor = self.batch_episodes.find({"episode": {"$gte": start, "$lte": end}})
         result = {}
         async for doc in cursor:
-            result[doc["episode"]] = {
-                "msg_id": doc["storage_msg_id"],
-                "chat_id": doc.get("chat_id") 
-            }
+            result[doc["episode"]] = {"msg_id": doc["storage_msg_id"], "chat_id": doc.get("chat_id")}
         return result
 
 db = Database()
